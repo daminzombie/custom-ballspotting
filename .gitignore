@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+pip-wheel-metadata/
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Editors / OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Training artifacts
+runs/
+wandb/
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+
+# Data and extracted frames
+data/
+datasets/
+videos/
+predictions/
+outputs/
+*.zip
+*.mp4
+*.mkv
+*.avi
+*.mov
+.frames_*/
+.grayscale_frames_*/
+
+# Local config overrides
+*.local.json
+*.local.toml
+*.env
+.env.*

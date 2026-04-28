@@ -1,0 +1,23 @@
+{
+  "manifest_path": "../data/custom/posttrain.json",
+  "pretrained_checkpoint_path": "../checkpoints/custom_pretrained.pt",
+  "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
+  "experiment_name": "custom_posttrain_from_custom",
+  "clip_frames_count": 100,
+  "overlap": 88,
+  "displacement_radius": 4,
+  "features_model_name": "regnety_008",
+  "temporal_shift_mode": "gsf",
+  "n_layers": 2,
+  "sgp_ks": 9,
+  "sgp_k": 4,
+  "nr_epochs": 10,
+  "learning_rate": 0.0003,
+  "train_batch_size": 1,
+  "val_batch_size": 1,
+  "acc_grad_iter": 8,
+  "flip_proba": 0.2,
+  "camera_move_proba": 0.1,
+  "crop_proba": 0.1,
+  "even_choice_proba": 0.25
+}

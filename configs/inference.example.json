@@ -1,0 +1,18 @@
+{
+  "video_path": "../data/videos/sample.mp4",
+  "model_checkpoint_path": "../checkpoints/custom_final_product_posttrain_720p_YYYYMMDD_HHMMSS_best.pt",
+  "output_path": "../predictions/sample_predictions.json",
+  "clip_frames_count": 100,
+  "overlap": 88,
+  "stride": 2,
+  "frame_target_width": 1280,
+  "frame_target_height": 720,
+  "features_model_name": "regnety_008",
+  "temporal_shift_mode": "gsf",
+  "n_layers": 2,
+  "sgp_ks": 9,
+  "sgp_k": 4,
+  "val_batch_size": 1,
+  "inference_threshold": 0.2,
+  "extract_frames": true
+}
