@@ -172,6 +172,7 @@ class TDeedClip:
         camera_move_proba: float = 0.0,
         crop_proba: float = 0.0,
         crop_size: float = 0.9,
+        device: str | None = None,
     ):
         num_frames = len(clip.frames)
         label_ids = torch.zeros(num_frames, dtype=torch.long)
@@ -197,6 +198,8 @@ class TDeedClip:
         with ThreadPoolExecutor() as executor:
             imgs = list(executor.map(load_image, [frame.frame_path for frame in clip.frames]))
         clip_tensor = torch.stack(imgs, dim=0)
+        if device is not None:
+            clip_tensor = clip_tensor.to(device)
         if random.random() < camera_move_proba:
             clip_tensor = augment_with_camera_movement(clip_tensor)
         if random.random() < crop_proba:
@@ -207,11 +210,11 @@ class TDeedClip:
             )
         return cls(
             origin=clip,
-            # Keep frames as uint8 until the train/inference loop moves the batch to GPU.
-            # Converting 720p clips to float32 on CPU makes collation and H2D copies 4x larger.
-            clip_tensor=clip_tensor,
-            label_ids=label_ids,
-            displacement=displacement,
+            # Match dudek's training path: when training on CUDA, each clip is moved
+            # sample-by-sample before DataLoader collation, avoiding a huge CPU batch copy.
+            clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
+            label_ids=label_ids.to(device) if device is not None else label_ids,
+            displacement=displacement.to(device) if device is not None else displacement,
         )
 
 
@@ -225,6 +228,7 @@ class CustomTDeedDataset(Dataset):
         crop_proba: float = 0.0,
         even_choice_proba: float = 0.0,
         enforced_epoch_size: int | None = None,
+        device: str | None = None,
     ):
         self.clips = clips
         self.displacement_radius = displacement_radius
@@ -233,6 +237,7 @@ class CustomTDeedDataset(Dataset):
         self.crop_proba = crop_proba
         self.even_choice_proba = even_choice_proba
         self.enforced_epoch_size = enforced_epoch_size
+        self.device = device
         self.clip_ids_by_label: dict[Action, list[int]] = {action: [] for action in Action}
         for idx, clip in enumerate(self.clips):
             for annotation in clip.unique_annotations:
@@ -254,6 +259,7 @@ class CustomTDeedDataset(Dataset):
             flip_proba=self.flip_proba,
             camera_move_proba=self.camera_move_proba,
             crop_proba=self.crop_proba,
+            device=self.device,
         )
         return {
             "clip_tensor": item.clip_tensor,

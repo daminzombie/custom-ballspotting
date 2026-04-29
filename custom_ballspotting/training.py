@@ -73,12 +73,14 @@ def train_model(
         crop_proba=config.crop_proba,
         even_choice_proba=config.even_choice_proba,
         enforced_epoch_size=config.enforce_train_epoch_size,
+        device=config.device if config.device == "cuda" else None,
     )
     val_dataset = (
         CustomTDeedDataset(
             val_clips,
             displacement_radius=config.displacement_radius,
             enforced_epoch_size=config.enforce_val_epoch_size,
+            device=config.device if config.device == "cuda" else None,
         )
         if config.run_validation and val_clips
         else None
@@ -101,18 +103,21 @@ def train_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     scaler = torch.amp.GradScaler("cuda") if config.device == "cuda" else None
     use_cuda = config.device == "cuda"
+    # When using CUDA, datasets already return CUDA tensors to match dudek's
+    # train-challenge input path. Pinned memory only applies to CPU tensors.
+    pin_memory = use_cuda and train_dataset.device is None
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.train_batch_size,
         shuffle=True,
-        pin_memory=use_cuda,
+        pin_memory=pin_memory,
     )
     val_loader = (
         DataLoader(
             val_dataset,
             batch_size=config.val_batch_size,
             shuffle=False,
-            pin_memory=use_cuda,
+            pin_memory=pin_memory,
         )
         if val_dataset is not None
         else None
@@ -249,9 +254,18 @@ def run_epoch(
     with context:
         for batch_idx, batch in enumerate(tqdm(loader, total=len(loader), desc=tqdm_desc)):
             use_cuda = device == "cuda"
-            clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
-            label_ids = batch["label_ids"].to(device, non_blocking=use_cuda).long()
-            displacement = batch["displacement"].to(device, non_blocking=use_cuda).float()
+            clip_tensor = batch["clip_tensor"]
+            label_ids = batch["label_ids"]
+            displacement = batch["displacement"]
+            if clip_tensor.device.type != device:
+                clip_tensor = clip_tensor.to(device, non_blocking=use_cuda)
+            if label_ids.device.type != device:
+                label_ids = label_ids.to(device, non_blocking=use_cuda)
+            if displacement.device.type != device:
+                displacement = displacement.to(device, non_blocking=use_cuda)
+            clip_tensor = clip_tensor.float()
+            label_ids = label_ids.long()
+            displacement = displacement.float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=not training)
                 logits = outputs["logits"].reshape(-1, NUM_ACTION_CLASSES + 1)
