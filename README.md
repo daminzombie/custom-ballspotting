@@ -6,7 +6,7 @@
 background + N custom actions
 ```
 
-For the current action set, `N = 15`, so the classifier has `16` classes.
+For the current action set, `N = 19`, so the classifier has `20` classes.
 
 ## Package Design
 
@@ -72,6 +72,10 @@ The action vocabulary is defined in `custom_ballspotting/actions.py`:
 class Action(str, Enum):
     PASS = "pass"
     PASS_RECEIVED = "pass_received"
+    FREE_KICK = "free_kick"
+    GOAL_KICK = "goal_kick"
+    CORNER = "corner"
+    THROW_IN = "throw_in"
     RECOVERY = "recovery"
     TACKLE = "tackle"
     INTERCEPTION = "interception"
@@ -302,7 +306,7 @@ _temp_fine.*
 The custom classifier head is new:
 
 ```text
-background + 15 custom actions
+background + 19 custom actions
 ```
 
 This is the recommended path when your custom dataset is small.

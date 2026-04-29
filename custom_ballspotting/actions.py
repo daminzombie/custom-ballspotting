@@ -5,6 +5,10 @@ from typing import NamedTuple
 class Action(str, Enum):
     PASS = "pass"
     PASS_RECEIVED = "pass_received"
+    FREE_KICK = "free_kick"
+    GOAL_KICK = "goal_kick"
+    CORNER = "corner"
+    THROW_IN = "throw_in"
     RECOVERY = "recovery"
     TACKLE = "tackle"
     INTERCEPTION = "interception"
@@ -29,6 +33,10 @@ class ActionConfig(NamedTuple):
 ACTION_CONFIGS: dict[Action, ActionConfig] = {
     Action.PASS: ActionConfig(1.0, 0.0, 1.0),
     Action.PASS_RECEIVED: ActionConfig(1.4, 0.0, 1.0),
+    Action.FREE_KICK: ActionConfig(1.41, 0.0, 1.5),
+    Action.GOAL_KICK: ActionConfig(1.42, 0.0, 1.5),
+    Action.CORNER: ActionConfig(1.43, 0.0, 1.5),
+    Action.THROW_IN: ActionConfig(1.44, 0.0, 1.5),
     Action.RECOVERY: ActionConfig(1.5, 0.0, 1.5),
     Action.TACKLE: ActionConfig(2.5, 0.1, 1.5),
     Action.INTERCEPTION: ActionConfig(2.8, 0.5, 2.0),
