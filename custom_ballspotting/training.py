@@ -109,6 +109,7 @@ def train_model(
     )
     best_val = float("inf")
     for epoch in range(config.nr_epochs):
+        print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
         train_loss = run_epoch(
             model,
             train_loader,
@@ -118,8 +119,19 @@ def train_model(
             scaler=scaler,
             scheduler=scheduler,
             acc_grad_iter=config.acc_grad_iter,
+            epoch_index=epoch,
+            nr_epochs=config.nr_epochs,
+            phase="train",
         )
-        val_loss = run_epoch(model, val_loader, config.device, class_weights)
+        val_loss = run_epoch(
+            model,
+            val_loader,
+            config.device,
+            class_weights,
+            epoch_index=epoch,
+            nr_epochs=config.nr_epochs,
+            phase="val",
+        )
         writer.add_scalar("loss/train", train_loss, epoch)
         writer.add_scalar("loss/val", val_loss, epoch)
         if val_loss < best_val:
@@ -179,6 +191,9 @@ def run_epoch(
     scaler=None,
     scheduler=None,
     acc_grad_iter: int = 1,
+    epoch_index: int | None = None,
+    nr_epochs: int | None = None,
+    phase: str = "train",
 ):
     training = optimizer is not None
     model.train(training)
@@ -186,8 +201,12 @@ def run_epoch(
     if training:
         optimizer.zero_grad()
     context = torch.enable_grad() if training else torch.no_grad()
+    if epoch_index is not None and nr_epochs is not None:
+        tqdm_desc = f"{phase} epoch {epoch_index + 1}/{nr_epochs}"
+    else:
+        tqdm_desc = phase
     with context:
-        for batch_idx, batch in enumerate(tqdm(loader, total=len(loader))):
+        for batch_idx, batch in enumerate(tqdm(loader, total=len(loader), desc=tqdm_desc)):
             clip_tensor = batch["clip_tensor"].to(device).float()
             label_ids = batch["label_ids"].to(device).long()
             displacement = batch["displacement"].to(device).float()
