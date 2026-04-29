@@ -39,11 +39,12 @@ class TrainConfig:
     train_batch_size: int = 1
     val_batch_size: int = 1
     acc_grad_iter: int = 8
-    flip_proba: float = 0.2
+    flip_proba: float = 0.1
     camera_move_proba: float = 0.1
     crop_proba: float = 0.1
     even_choice_proba: float = 0.0
-    train_split: float = 0.8
+    train_split: float = 0.8  # used only when run_validation is true
+    run_validation: bool = False  # if false: all clips train, checkpoint on lowest train loss
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
     random_seed: int = 42
@@ -59,7 +60,11 @@ def train_model(
 ) -> CustomTDeedModule:
     config = config or TrainConfig()
     save_as = render_checkpoint_path(save_as, experiment_name=experiment_name)
-    train_clips, val_clips = split_by_video(clips, config.train_split, config.random_seed)
+    if config.run_validation:
+        train_clips, val_clips = split_by_video(clips, config.train_split, config.random_seed)
+    else:
+        train_clips = clips
+        val_clips = []
     train_dataset = CustomTDeedDataset(
         train_clips,
         displacement_radius=config.displacement_radius,
@@ -69,10 +74,14 @@ def train_model(
         even_choice_proba=config.even_choice_proba,
         enforced_epoch_size=config.enforce_train_epoch_size,
     )
-    val_dataset = CustomTDeedDataset(
-        val_clips,
-        displacement_radius=config.displacement_radius,
-        enforced_epoch_size=config.enforce_val_epoch_size,
+    val_dataset = (
+        CustomTDeedDataset(
+            val_clips,
+            displacement_radius=config.displacement_radius,
+            enforced_epoch_size=config.enforce_val_epoch_size,
+        )
+        if config.run_validation and val_clips
+        else None
     )
 
     model = CustomTDeedModule(
@@ -92,7 +101,11 @@ def train_model(
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     scaler = torch.amp.GradScaler("cuda") if config.device == "cuda" else None
     train_loader = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=config.val_batch_size, shuffle=False)
+    val_loader = (
+        DataLoader(val_dataset, batch_size=config.val_batch_size, shuffle=False)
+        if val_dataset is not None
+        else None
+    )
     optimizer_steps_per_epoch = max(1, len(train_loader) // config.acc_grad_iter)
     warmup_steps = optimizer_steps_per_epoch * config.warm_up_epochs
     total_steps = max(1, (config.nr_epochs - config.warm_up_epochs) * optimizer_steps_per_epoch)
@@ -112,7 +125,8 @@ def train_model(
         dtype=torch.float32,
         device=config.device,
     )
-    best_val = float("inf")
+    best_metric = float("inf")
+    best_metric_name = "val_loss" if config.run_validation and val_loader is not None else "train_loss"
     for epoch in range(config.nr_epochs):
         print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
         train_loss = run_epoch(
@@ -128,37 +142,47 @@ def train_model(
             nr_epochs=config.nr_epochs,
             phase="train",
         )
-        val_loss = run_epoch(
-            model,
-            val_loader,
-            config.device,
-            class_weights,
-            epoch_index=epoch,
-            nr_epochs=config.nr_epochs,
-            phase="val",
-        )
+        if val_loader is not None:
+            val_loss = run_epoch(
+                model,
+                val_loader,
+                config.device,
+                class_weights,
+                epoch_index=epoch,
+                nr_epochs=config.nr_epochs,
+                phase="val",
+            )
+        else:
+            val_loss = float("nan")
         writer.add_scalar("loss/train", train_loss, epoch)
-        writer.add_scalar("loss/val", val_loss, epoch)
-        if val_loss < best_val:
-            best_val = val_loss
+        if val_loader is not None:
+            writer.add_scalar("loss/val", val_loss, epoch)
+        criterion_loss = val_loss if val_loader is not None else train_loss
+        should_save = criterion_loss == criterion_loss and criterion_loss < best_metric  # not NaN
+        if should_save:
+            best_metric = criterion_loss
             os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
             torch.save(model.state_dict(), save_as)
-            write_checkpoint_metadata(
-                save_as,
-                {
-                    "checkpoint_path": save_as,
-                    "experiment_name": experiment_name,
-                    "epoch": epoch,
-                    "best_val_loss": best_val,
-                    "train_loss": train_loss,
-                    "val_loss": val_loss,
-                    "pretrained_checkpoint_path": pretrained_checkpoint_path,
-                    "config": config.__dict__,
-                    "num_action_classes": NUM_ACTION_CLASSES,
-                    "num_train_clips": len(train_clips),
-                    "num_val_clips": len(val_clips),
-                },
-            )
+            metric_payload = {
+                "checkpoint_path": save_as,
+                "experiment_name": experiment_name,
+                "epoch": epoch,
+                "selection_metric": best_metric_name,
+                "best_metric": best_metric,
+                "train_loss": train_loss,
+                "val_loss": val_loss if val_loader is not None else None,
+                "pretrained_checkpoint_path": pretrained_checkpoint_path,
+                "config": config.__dict__,
+                "num_action_classes": NUM_ACTION_CLASSES,
+                "num_train_clips": len(train_clips),
+                "num_val_clips": len(val_clips),
+                "run_validation": config.run_validation,
+            }
+            if val_loader is not None:
+                metric_payload["best_val_loss"] = best_metric  # backwards-compatible alias
+            else:
+                metric_payload["best_train_loss"] = best_metric
+            write_checkpoint_metadata(save_as, metric_payload)
     return model
 
 

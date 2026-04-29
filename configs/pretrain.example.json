@@ -16,9 +16,9 @@
   "train_batch_size": 1,
   "val_batch_size": 1,
   "acc_grad_iter": 8,
-  "flip_proba": 0.2,
+  "flip_proba": 0.1,
   "camera_move_proba": 0.1,
   "crop_proba": 0.1,
-  "even_choice_proba": 0.25,
+  "even_choice_proba": 0,
   "train_split": 0.8
 }

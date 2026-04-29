@@ -82,6 +82,13 @@ def _train_options(command):
     command = click.option("--enforce_val_epoch_size", type=int, default=None)(command)
     command = click.option("--random_seed", type=int, default=None)(command)
     command = click.option("--device", type=str, default=None)(command)
+    command = click.option(
+        "--run-validation/--no-run-validation",
+        "run_validation",
+        default=None,
+        help="Use a train/val split and select best checkpoint by val loss; "
+        "default off (matches dudek train-challenge). Omitted keeps JSON default.",
+    )(command)
     return command
 
 

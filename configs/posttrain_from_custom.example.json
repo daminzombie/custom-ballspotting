@@ -3,6 +3,7 @@
   "pretrained_checkpoint_path": "../checkpoints/tdeed_challenge.pt",
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_posttrain_from_custom",
+  "run_validation": false,
   "clip_frames_count": 100,
   "overlap": 88,
   "displacement_radius": 4,
@@ -16,8 +17,8 @@
   "train_batch_size": 4,
   "val_batch_size": 1,
   "acc_grad_iter": 8,
-  "flip_proba": 0.2,
+  "flip_proba": 0.1,
   "camera_move_proba": 0.1,
   "crop_proba": 0.1,
-  "even_choice_proba": 0.25
+  "even_choice_proba": 0
 }

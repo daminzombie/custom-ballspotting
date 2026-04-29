@@ -182,7 +182,11 @@ Training and frame-extraction configs must include **`dataset_root`** (root of t
 
 Paths inside config files are resolved **relative to the config file’s directory** (`resolve_config_path` in `custom_ballspotting/config.py`).
 
-## Input Resolution
+### Training defaults (dudek-aligned)
+
+By default, **`run_validation`** is **`false`**: every clip folder under **`dataset_root`** contributes to training (no held-out validation split), each epoch runs **training only**, and the best checkpoint is chosen by **lowest training loss** (`1.5 * CE + displacement`, same formulation as validation when enabled).
+
+Set **`"run_validation": true`** in JSON (or **`--run-validation`** / **`--no-run-validation`** on the CLI to override JSON) for a **`train_split`** train/val split and model selection by **validation loss**.
 
 The default workflow extracts 720p frames:
 
@@ -283,8 +287,7 @@ For each saved best checkpoint, the trainer also writes a sidecar metadata file:
 checkpoints/custom_final_product_posttrain_720p_20260428_073012_best.metadata.json
 ```
 
-The metadata records the experiment name, epoch, validation loss, source
-checkpoint, training config, and number of train/validation clips.
+The metadata records the experiment name, epoch, **`selection_metric`** (**`train_loss`** or **`val_loss`**), **`best_metric`**, source checkpoint, training **`config`** (including **`run_validation`**), **`num_action_classes`**, and train/validation clip counts.
 
 For inference, set `model_checkpoint_path` to the exact timestamped checkpoint
 you want to evaluate. This is intentional: it avoids silently using the wrong
@@ -326,7 +329,7 @@ background + 19 custom actions
 
 This is the recommended path when your custom dataset is small.
 
-The bundled `final_posttrain_from_tdeed*.json` examples run longer than a smoke test (`nr_epochs`: 30, `even_choice_proba`: 0.25). They use **`train_batch_size`** / **`val_batch_size`** `1` and **`acc_grad_iter`** `8` so effective batch size stays reasonable on typical GPUs; adjust those fields if you need different memory usage.
+The bundled `final_posttrain_from_tdeed*.json` examples run longer than a smoke test (`nr_epochs`: 30). Augmentation defaults match dudek **`train-challenge`** (`flip` / camera / crop at **0.1**, **`even_choice_proba`**: **0**). Raise **`even_choice_proba`** (for example toward **0.25**) if the dataset is tiny and labels are sparse. Those configs use **`train_batch_size`** / **`val_batch_size`** `1` and **`acc_grad_iter`** `8` so effective batch size stays reasonable on typical GPUs; adjust those fields if you need different memory usage.
 
 ## Optional Second-Stage Fine-Tuning
 
