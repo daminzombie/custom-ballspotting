@@ -58,3 +58,6 @@ outputs/
 *.local.toml
 *.env
 .env.*
+
+.data
+checkpoints/

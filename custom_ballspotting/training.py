@@ -13,7 +13,12 @@ from tqdm import tqdm
 
 from custom_ballspotting.actions import ACTION_CONFIGS, Action, NUM_ACTION_CLASSES
 from custom_ballspotting.checkpoints import render_checkpoint_path, write_checkpoint_metadata
-from custom_ballspotting.data import CustomTDeedDataset, VideoClip, build_clips, load_manifest
+from custom_ballspotting.data import (
+    CustomTDeedDataset,
+    VideoClip,
+    build_clips,
+    load_dataset_records,
+)
 from custom_ballspotting.model.tdeed import CustomTDeedModule
 
 
@@ -156,15 +161,15 @@ def train_model(
     return model
 
 
-def train_from_manifest(
-    manifest_path: str,
+def train_from_dataset(
     save_as: str,
+    dataset_root: str,
     pretrained_checkpoint_path: str | None = None,
     experiment_name: str = "custom_tdeed",
     config: TrainConfig | None = None,
 ) -> CustomTDeedModule:
     config = config or TrainConfig()
-    records = load_manifest(manifest_path)
+    records = load_dataset_records(dataset_root)
     clips = build_clips(
         records,
         clip_frames_count=config.clip_frames_count,

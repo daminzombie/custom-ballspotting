@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import random
+import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
 from pathlib import Path
@@ -20,6 +21,8 @@ from custom_ballspotting.augmentations import (
     crop_video,
     resize_frame,
 )
+
+GROUND_TRUTH_JSON = "ground_truth.json"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -46,21 +49,6 @@ class VideoRecord:
     video_path: str
     annotations: list[Annotation]
     video_id: str | None = None
-
-    @classmethod
-    def from_json(cls, raw: dict, manifest_dir: str):
-        video_path = raw["video_path"]
-        if not os.path.isabs(video_path):
-            video_path = os.path.normpath(os.path.join(manifest_dir, video_path))
-        annotations = [
-            Annotation(label=Action(item["label"]), position=int(item["position"]))
-            for item in raw.get("annotations", [])
-        ]
-        return cls(
-            video_path=video_path,
-            annotations=annotations,
-            video_id=raw.get("video_id") or Path(video_path).stem,
-        )
 
     @cached_property
     def metadata_fps(self) -> float:
@@ -272,12 +260,88 @@ class CustomTDeedDataset(Dataset):
         }
 
 
-def load_manifest(manifest_path: str) -> list[VideoRecord]:
-    with open(manifest_path, "r") as f:
+def find_first_mp4(directory: str | Path) -> str | None:
+    """Return absolute path to the first `.mp4` in `directory` (lexicographic order)."""
+    dir_path = Path(directory)
+    if not dir_path.is_dir():
+        return None
+    mp4s = sorted(dir_path.glob("*.mp4"))
+    return str(mp4s[0].resolve()) if mp4s else None
+
+
+def annotations_from_ground_truth_payload(
+    raw: dict,
+    *,
+    skip_unknown_labels: bool = True,
+    unknown_labels_acc: set[str] | None = None,
+) -> list[Annotation]:
+    """Parse SoccerNet-style `ground_truth.json` annotations."""
+    out: list[Annotation] = []
+    for item in raw.get("annotations", []):
+        label_raw = item["label"]
+        try:
+            action = Action(label_raw)
+        except ValueError:
+            if skip_unknown_labels:
+                if unknown_labels_acc is not None:
+                    unknown_labels_acc.add(str(label_raw))
+                continue
+            raise
+        pos = int(item["position"])
+        out.append(Annotation(label=action, position=pos))
+    return out
+
+
+def video_record_from_clip_dir(
+    clip_dir: Path,
+    dataset_root: Path,
+    *,
+    unknown_labels_acc: set[str] | None = None,
+) -> VideoRecord | None:
+    """One clip directory: first `*.mp4` + `ground_truth.json`."""
+    mp4 = find_first_mp4(clip_dir)
+    if mp4 is None:
+        return None
+    gt_path = clip_dir / GROUND_TRUTH_JSON
+    if not gt_path.is_file():
+        return None
+    with open(gt_path, "r") as f:
         raw = json.load(f)
-    videos_raw = raw["videos"] if isinstance(raw, dict) and "videos" in raw else raw
-    manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
-    return [VideoRecord.from_json(item, manifest_dir=manifest_dir) for item in videos_raw]
+    annotations = annotations_from_ground_truth_payload(
+        raw, unknown_labels_acc=unknown_labels_acc
+    )
+    try:
+        rel = clip_dir.relative_to(dataset_root)
+    except ValueError:
+        rel = clip_dir.resolve()
+    video_id = str(rel).replace(os.sep, "/")
+    return VideoRecord(video_path=mp4, annotations=annotations, video_id=video_id)
+
+
+def load_dataset_records(dataset_root: str) -> list[VideoRecord]:
+    """
+    Load clips under dataset_root (recursive): each folder that contains
+    ``ground_truth.json`` uses the lexicographically first ``*.mp4`` in that folder.
+    """
+    root = Path(dataset_root).resolve()
+    if not root.is_dir():
+        raise FileNotFoundError(f"dataset_root is not a directory: {root}")
+    clip_dirs = sorted({p.parent for p in root.rglob(GROUND_TRUTH_JSON)})
+    unknown_labels: set[str] = set()
+    records: list[VideoRecord] = []
+    for clip_dir in clip_dirs:
+        rec = video_record_from_clip_dir(clip_dir, root, unknown_labels_acc=unknown_labels)
+        if rec is not None:
+            records.append(rec)
+    if unknown_labels:
+        sample = ", ".join(sorted(unknown_labels)[:12])
+        more = f" (+{len(unknown_labels) - 12} types)" if len(unknown_labels) > 12 else ""
+        warnings.warn(
+            f"Skipped annotations whose labels are not in Action enum (types: {sample}{more}). "
+            "Extend Action in actions.py or map labels upstream.",
+            stacklevel=2,
+        )
+    return records
 
 
 def build_clips(

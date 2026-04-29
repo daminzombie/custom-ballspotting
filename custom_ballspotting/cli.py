@@ -7,9 +7,9 @@ from custom_ballspotting.config import (
     resolve_config_path,
 )
 from custom_ballspotting.checkpoints import render_checkpoint_path
-from custom_ballspotting.data import load_manifest
+from custom_ballspotting.data import find_first_mp4, load_dataset_records
 from custom_ballspotting.inference import infer_video as infer_video_fn
-from custom_ballspotting.training import TrainConfig, train_from_manifest
+from custom_ballspotting.training import TrainConfig, train_from_dataset
 
 
 @click.group()
@@ -18,16 +18,14 @@ def cli():
 
 
 @cli.command("extract-frames")
-@click.option("--config", "config_path", type=str, default=None)
-@click.option("--manifest_path", type=str, default=None)
+@click.option("--config", "config_path", type=str, required=True)
 @click.option("--stride", type=int, default=None)
 @click.option("--frame_target_width", type=int, default=None)
 @click.option("--frame_target_height", type=int, default=None)
 @click.option("--radius_seconds", type=int, default=None)
 @click.option("--save_all", type=bool, default=None)
 def extract_frames(
-    config_path: str | None,
-    manifest_path: str,
+    config_path: str,
     stride: int | None,
     frame_target_width: int | None,
     frame_target_height: int | None,
@@ -37,7 +35,6 @@ def extract_frames(
     values = merge_values(
         load_json_config(config_path),
         {
-            "manifest_path": manifest_path,
             "stride": stride,
             "frame_target_width": frame_target_width,
             "frame_target_height": frame_target_height,
@@ -45,9 +42,8 @@ def extract_frames(
             "save_all": save_all,
         },
     )
-    manifest_path = _required(values, "manifest_path")
-    manifest_path = resolve_config_path(manifest_path, config_path)
-    for record in load_manifest(manifest_path):
+    dataset_root = resolve_config_path(_required(values, "dataset_root"), config_path)
+    for record in load_dataset_records(dataset_root):
         record.extract_frames(
             stride=values.get("stride", 2),
             target_width=values.get("frame_target_width", 1280),
@@ -58,8 +54,7 @@ def extract_frames(
 
 
 def _train_options(command):
-    command = click.option("--config", "config_path", type=str, default=None)(command)
-    command = click.option("--manifest_path", type=str, default=None)(command)
+    command = click.option("--config", "config_path", type=str, required=True)(command)
     command = click.option("--pretrained_checkpoint_path", type=str, default=None)(command)
     command = click.option("--save_as", type=str, default=None)(command)
     command = click.option("--experiment_name", type=str, default=None)(command)
@@ -99,7 +94,7 @@ def train(**kwargs):
 @cli.command("pretrain")
 @_train_options
 def pretrain(**kwargs):
-    """Train on a source manifest without loading a custom checkpoint."""
+    """Train from dataset_root without loading a pretrained checkpoint."""
     _run_train_command(require_pretrained=False, force_no_pretrained=True, **kwargs)
 
 
@@ -114,7 +109,7 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
     config_path = kwargs.pop("config_path")
     config_values = load_json_config(config_path)
     values = merge_values(config_values, kwargs)
-    manifest_path = resolve_config_path(_required(values, "manifest_path"), config_path)
+    dataset_root = resolve_config_path(_required(values, "dataset_root"), config_path)
     experiment_name = values.get("experiment_name", "custom_tdeed")
     save_as_template = values.get("save_as")
     if save_as_template is not None:
@@ -126,9 +121,9 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
     if require_pretrained and not pretrained_checkpoint_path:
         raise click.ClickException("--pretrained_checkpoint_path is required for posttrain")
     config = dataclass_from_dict(TrainConfig, values)
-    train_from_manifest(
-        manifest_path=manifest_path,
+    train_from_dataset(
         save_as=save_as,
+        dataset_root=dataset_root,
         pretrained_checkpoint_path=pretrained_checkpoint_path,
         experiment_name=experiment_name,
         config=config,
@@ -138,7 +133,13 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 
 @cli.command("infer-video")
 @click.option("--config", "config_path", type=str, default=None)
-@click.option("--video_path", type=str, default=None)
+@click.option("--video_path", type=str, default=None, help="Video file for inference.")
+@click.option(
+    "--video_dir",
+    type=str,
+    default=None,
+    help="Directory containing a single .mp4 (uses lexicographically first *.mp4).",
+)
 @click.option("--model_checkpoint_path", type=str, default=None)
 @click.option("--output_path", type=str, default=None)
 @click.option("--clip_frames_count", type=int, default=None)
@@ -157,7 +158,19 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 @click.option("--device", type=str, default=None)
 def infer_video(config_path: str | None, **kwargs):
     values = merge_values(load_json_config(config_path), kwargs)
-    values["video_path"] = resolve_config_path(_required(values, "video_path"), config_path)
+    video_dir = values.get("video_dir")
+    video_path = values.get("video_path")
+    if video_dir is not None:
+        video_dir_resolved = resolve_config_path(video_dir, config_path)
+        mp4 = find_first_mp4(video_dir_resolved)
+        if mp4 is None:
+            raise click.ClickException(f"No .mp4 file found in {video_dir_resolved}")
+        values["video_path"] = mp4
+    elif video_path is not None:
+        values["video_path"] = resolve_config_path(video_path, config_path)
+    else:
+        raise click.ClickException("Provide --video_path or --video_dir")
+    values.pop("video_dir", None)
     values["model_checkpoint_path"] = resolve_config_path(
         _required(values, "model_checkpoint_path"), config_path
     )

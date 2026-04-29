@@ -15,7 +15,7 @@ The package is library-first and CLI-second:
 ```text
 custom_ballspotting/
   actions.py       # custom action vocabulary, weights, thresholds, tolerances
-  data.py          # manifest loading, frame extraction, clip creation, dataset
+  data.py          # dataset discovery (clip folders), frame extraction, clips, dataset
   training.py      # reusable training API
   inference.py     # reusable inference API
   cli.py           # thin command-line wrapper
@@ -28,7 +28,7 @@ custom_ballspotting/
 You can use it from another Python project:
 
 ```python
-from custom_ballspotting.training import TrainConfig, train_from_manifest
+from custom_ballspotting.training import TrainConfig, train_from_dataset
 from custom_ballspotting.inference import infer_video
 ```
 
@@ -95,73 +95,64 @@ ActionConfig(weight, min_score, tolerance_seconds)
 
 Those values are used for training class weights and inference filtering/NMS. For rare but important classes like `goal`, `foul`, or `save`, a higher class weight is useful when the dataset is small.
 
-## Annotation Manifest
+## Dataset layout
 
-Training data is described by a JSON manifest. Use either a top-level list or a top-level object with `videos`.
+Training uses clip folders under **`dataset_root`**. Set **`dataset_root`** in your JSON config files (`configs/*.json`); paths are resolved relative to the config file.
 
-```json
-{
-  "videos": [
-    {
-      "video_id": "match_001",
-      "video_path": "videos/match_001.mp4",
-      "annotations": [
-        {"position": 14240, "label": "pass"},
-        {"position": 15280, "label": "recovery"},
-        {"position": 25040, "label": "shot"}
-      ]
-    }
-  ]
-}
+The loader walks **`dataset_root`** recursively for **`ground_truth.json`**. Each folder that contains it uses the lexicographically first **`*.mp4`** as the video and reads labels from that JSON (SoccerNet-style **`annotations`** with **`label`** and **`position`** in milliseconds). Rows whose **`label`** is not in **`Action`** are skipped (you get one warning listing unknown label types after loading).
+
+Example layout:
+
+```text
+dataset_root/
+  batch_or_game_id/
+    56944/
+      ground_truth.json
+      <any_name>.mp4
 ```
-
-Rules:
-
-- `position` is milliseconds from the start of the video.
-- `label` must match one of the values in `Action`.
-- `video_path` can be absolute or relative to the manifest file.
-- `video_id` is optional but recommended for stable train/validation splitting.
-- There is no team field.
 
 ## Frame Extraction
 
 Frames must be extracted before training. The extractor saves frames next to each video under `.frames_<video_name>/`.
 
-Using flags:
+Using **`--config`** (required): paths such as **`dataset_root`** live in the JSON file:
+
+```bash
+custom-ballspotting extract-frames --config configs/extract_frames.example.json
+```
+
+Optional CLI flags override keys from the same config (`stride`, `frame_target_width`, etc.):
 
 ```bash
 custom-ballspotting extract-frames \
-  --manifest_path="../data/custom/train.json" \
+  --config configs/extract_frames.example.json \
   --stride=2 \
   --frame_target_width=1280 \
   --frame_target_height=720 \
   --radius_seconds=8
 ```
 
-Using a config file:
-
-```bash
-custom-ballspotting extract-frames --config configs/extract_frames.example.json
-```
-
 For training, you usually do not need every frame. `radius_seconds=8` keeps frames around annotations plus stride frames, which is more storage-efficient for sparse action spotting. For inference on a full video, frames are extracted with `save_all=true` internally.
 
 ## Config Files
 
-All main commands accept `--config <json-file>`. CLI flags override values from the config.
+Commands **`extract-frames`**, **`train`**, **`pretrain`**, and **`posttrain`** take a **required** **`--config <json-file>`**. CLI flags on the same invocation override values from that JSON.
 
-Example configs are provided:
+**`infer-video`** may use **`--config`** alone or combine **`--video_path`** / **`--video_dir`** with **`--model_checkpoint_path`** (and other inference flags) without a config file.
+
+Example configs live under `configs/`, including:
 
 ```text
-configs/extract_frames.example.json
-configs/final_posttrain_from_tdeed.example.json
-configs/inference.example.json
-configs/extract_frames_720p.example.json
-configs/final_posttrain_from_tdeed_720p.example.json
-configs/inference_720p.example.json
+extract_frames.example.json / extract_frames_720p.example.json
+pretrain.example.json
+posttrain_from_tdeed.example.json / posttrain_from_custom.example.json
+final_posttrain_from_tdeed.example.json / final_posttrain_from_tdeed_720p.example.json
+inference.example.json / inference_720p.example.json
 ```
 
-Paths inside config files are resolved relative to the config file location.
+Training and frame-extraction configs must include **`dataset_root`** (root of the clip-folder tree). Inference configs use **`video_path`** or **`video_dir`** (directory whose first `*.mp4` is used).
+
+Paths inside config files are resolved **relative to the config file’s directory** (`resolve_config_path` in `custom_ballspotting/config.py`).
 
 ## Input Resolution
 
@@ -307,19 +298,7 @@ background + 15 custom actions
 
 This is the recommended path when your custom dataset is small.
 
-The default final config runs longer than a smoke test:
-
-```json
-{
-  "nr_epochs": 30,
-  "train_batch_size": 2,
-  "val_batch_size": 2,
-  "acc_grad_iter": 4,
-  "even_choice_proba": 0.25
-}
-```
-
-That gives lower GPU memory pressure while still accumulating gradients over multiple steps.
+The bundled `final_posttrain_from_tdeed*.json` examples run longer than a smoke test (`nr_epochs`: 30, `even_choice_proba`: 0.25). They use **`train_batch_size`** / **`val_batch_size`** `1` and **`acc_grad_iter`** `8` so effective batch size stays reasonable on typical GPUs; adjust those fields if you need different memory usage.
 
 ## Optional Second-Stage Fine-Tuning
 
@@ -372,7 +351,7 @@ For a 720p-trained checkpoint:
 custom-ballspotting infer-video --config configs/inference_720p.example.json
 ```
 
-Or direct:
+Or direct (either **`--video_path`** to one file or **`--video_dir`** to a folder containing an `.mp4`; the first match is used lexicographically):
 
 ```bash
 custom-ballspotting infer-video \
@@ -415,7 +394,7 @@ Inference applies per-class `min_score` and `tolerance_seconds` from `ACTION_CON
 Training from another project:
 
 ```python
-from custom_ballspotting.training import TrainConfig, train_from_manifest
+from custom_ballspotting.training import TrainConfig, train_from_dataset
 
 config = TrainConfig(
     clip_frames_count=100,
@@ -426,10 +405,10 @@ config = TrainConfig(
     acc_grad_iter=8,
 )
 
-train_from_manifest(
-    manifest_path="data/custom/posttrain.json",
-    pretrained_checkpoint_path="checkpoints/tdeed_checkpoint_best.pt",
+train_from_dataset(
     save_as="checkpoints/{experiment_name}_{timestamp}_best.pt",
+    dataset_root="data/custom/dataset",
+    pretrained_checkpoint_path="checkpoints/tdeed_checkpoint_best.pt",
     experiment_name="my_custom_posttrain",
     config=config,
 )
@@ -450,10 +429,10 @@ result = infer_video(
 Using lower-level APIs:
 
 ```python
-from custom_ballspotting.data import load_manifest, build_clips
+from custom_ballspotting.data import load_dataset_records, build_clips
 from custom_ballspotting.training import train_model, TrainConfig
 
-records = load_manifest("data/custom/train.json")
+records = load_dataset_records("data/custom/dataset")
 clips = build_clips(records, clip_frames_count=100, overlap=88)
 train_model(
     clips,
@@ -465,10 +444,10 @@ train_model(
 ## Recommended Workflow
 
 1. Define or update `custom_ballspotting/actions.py`.
-2. Export your annotations to the manifest format.
-3. Extract frames for training manifests.
-4. Posttrain from a strong T-DEED/SoccerNetBall checkpoint.
-5. Run inference on sample videos.
+2. Arrange clip folders under **`dataset_root`**: each clip directory contains **`ground_truth.json`** and one **`*.mp4`** (see [Dataset layout](#dataset-layout)).
+3. Extract frames (`extract-frames --config …` with **`dataset_root`** in the JSON).
+4. Posttrain from a strong T-DEED/SoccerNetBall checkpoint (`posttrain --config …`).
+5. Run inference on sample videos (`infer-video` with **`--config`** or **`--video_path`** / **`--video_dir`**).
 6. Review false positives/negatives and adjust:
    - annotation quality,
    - `ActionConfig.min_score`,
