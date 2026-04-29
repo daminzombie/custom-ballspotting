@@ -5,7 +5,7 @@
   "experiment_name": "custom_posttrain_from_custom",
   "run_validation": false,
   "clip_frames_count": 100,
-  "overlap": 88,
+  "overlap": 68,
   "displacement_radius": 4,
   "features_model_name": "regnety_008",
   "temporal_shift_mode": "gsf",
