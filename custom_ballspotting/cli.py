@@ -8,7 +8,7 @@ from custom_ballspotting.config import (
 )
 from custom_ballspotting.checkpoints import render_checkpoint_path
 from custom_ballspotting.data import find_first_mp4, load_dataset_records
-from custom_ballspotting.inference import infer_video as infer_video_fn
+from custom_ballspotting.inference import infer_video as infer_video_fn, infer_video_param_names
 from custom_ballspotting.training import TrainConfig, train_from_dataset
 
 
@@ -152,6 +152,7 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 @click.option("--n_layers", type=int, default=None)
 @click.option("--sgp_ks", type=int, default=None)
 @click.option("--sgp_k", type=int, default=None)
+@click.option("--gaussian_blur_kernel_size", type=int, default=None)
 @click.option("--val_batch_size", type=int, default=None)
 @click.option("--inference_threshold", type=float, default=None)
 @click.option("--extract_frames", type=bool, default=None)
@@ -177,7 +178,9 @@ def infer_video(config_path: str | None, **kwargs):
     values["output_path"] = resolve_config_path(
         values.get("output_path", "predictions.json"), config_path
     )
-    result = infer_video_fn(**values)
+    infer_params = infer_video_param_names()
+    filtered = {k: v for k, v in values.items() if k in infer_params}
+    result = infer_video_fn(**filtered)
     click.echo(f"Saved {len(result['predictions'])} predictions to {values['output_path']}")
 
 

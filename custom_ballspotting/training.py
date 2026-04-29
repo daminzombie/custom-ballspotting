@@ -154,6 +154,7 @@ def train_model(
                     "val_loss": val_loss,
                     "pretrained_checkpoint_path": pretrained_checkpoint_path,
                     "config": config.__dict__,
+                    "num_action_classes": NUM_ACTION_CLASSES,
                     "num_train_clips": len(train_clips),
                     "num_val_clips": len(val_clips),
                 },

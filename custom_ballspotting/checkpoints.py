@@ -45,3 +45,18 @@ def write_checkpoint_metadata(
     with open(metadata_path, "w") as f:
         json.dump(metadata, f, indent=2, default=str)
     return metadata_path
+
+
+def metadata_path_for_checkpoint(checkpoint_path: str) -> str:
+    """Sibling file: ``<stem>.metadata.json`` next to ``<stem>.pt``."""
+    p = Path(checkpoint_path).resolve()
+    return f"{p.with_suffix('')}.metadata.json"
+
+
+def read_checkpoint_metadata(checkpoint_path: str) -> dict[str, Any] | None:
+    """Load training metadata written beside the checkpoint, if present."""
+    meta_path = metadata_path_for_checkpoint(checkpoint_path)
+    if not os.path.isfile(meta_path):
+        return None
+    with open(meta_path, encoding="utf-8") as f:
+        return json.load(f)

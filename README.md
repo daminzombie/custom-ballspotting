@@ -103,9 +103,33 @@ Those values are used for training class weights and inference filtering/NMS. Fo
 
 Training uses clip folders under **`dataset_root`**. Set **`dataset_root`** in your JSON config files (`configs/*.json`); paths are resolved relative to the config file.
 
-The loader walks **`dataset_root`** recursively for **`ground_truth.json`**. Each folder that contains it uses the lexicographically first **`*.mp4`** as the video and reads labels from that JSON (SoccerNet-style **`annotations`** with **`label`** and **`position`** in milliseconds). Rows whose **`label`** is not in **`Action`** are skipped (you get one warning listing unknown label types after loading).
+The loader walks **`dataset_root`** recursively for **`ground_truth.json`**. Each folder that contains it uses the lexicographically first **`*.mp4`** as the video.
 
-Example layout:
+### `ground_truth.json` format
+
+Files must contain a **`annotations`** array. Each element is one event:
+
+| Field       | Type    | Meaning |
+|------------|---------|---------|
+| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (for example **`pass`**, **`free_kick`**, **`shot`**). SoccerNet CSV-style snake_case labels map here as plain strings. |
+| **`position`** | integer | Time of the event in **milliseconds** from the start of that video file. |
+
+Unknown **`label`** values are **skipped** (with one summary warning naming the unknown types).
+
+Example:
+
+```json
+{
+  "annotations": [
+    { "label": "pass", "position": 14240 },
+    { "label": "shot", "position": 250400 }
+  ]
+}
+```
+
+A top-level object with extra keys besides **`annotations`** is fine; unknown keys outside this structure are unused. Rows whose **`label`** is not in **`Action`** are skipped.
+
+Example folder layout:
 
 ```text
 dataset_root/
@@ -343,10 +367,25 @@ For quick smoke tests:
 
 ## Inference
 
+When you train with this package, the best **`*.pt`** file is saved next to **`*.metadata.json`**. Inference loads that metadata and, for any argument you **omit**, uses the **same training `TrainConfig`** (clip length, overlap, backbone name, temporal head, batch size, blur setting, etc.) so the rebuilt model matches the checkpoint. Passing flags or JSON overrides still wins (**explicit overrides metadata**).
+
+If **`metadata`** is missing (for example an exported weight file only), a warning is logged and built-in defaults are used; supply **`clip_frames_count`**, **`overlap`**, **`frame_targets`**, and architecture flags yourself so they match how the model was trained.
+
+Training saves **`num_action_classes`** in metadata. If it does not match **`NUM_ACTION_CLASSES`** in your current **`actions.py`**, inference raises a clear error (label order and logits would be wrong).
+
 From a posttrained checkpoint:
 
 ```bash
 custom-ballspotting infer-video --config configs/inference.example.json
+```
+
+Minimal direct invocation (architecture read from **`../checkpoints/your_run_best.metadata.json`** if present):
+
+```bash
+custom-ballspotting infer-video \
+  --video_path="../data/videos/sample.mp4" \
+  --model_checkpoint_path="../checkpoints/your_run_best.pt" \
+  --output_path="../predictions/sample_predictions.json"
 ```
 
 For a 720p-trained checkpoint:
@@ -371,9 +410,8 @@ custom-ballspotting infer-video \
 ```
 
 Input video resolution can be 1920x1080 or any normal video size. Frames are resized to the configured target size before inference.
-For a model trained with 720p extracted frames, inference should use the same
-`frame_target_width`, `frame_target_height`, `clip_frames_count`, and `overlap`
-as training.
+For a model trained with 720p extracted frames, **`infer_video`** aligns resolution and tiling with training automatically when **`metadata`** is present; you can still set
+`frame_target_width`, `frame_target_height`, `clip_frames_count`, and `overlap` explicitly when needed.
 
 Output format:
 
@@ -427,6 +465,17 @@ result = infer_video(
     video_path="videos/sample.mp4",
     model_checkpoint_path="checkpoints/my_custom_posttrain_YYYYMMDD_HHMMSS_best.pt",
     output_path="predictions/sample.json",
+)
+```
+
+Optional kwargs (for example **`clip_frames_count`**) override **`*.metadata.json`** when set; **`None`/omitted** uses metadata then defaults.
+
+```python
+result = infer_video(
+    video_path="videos/sample.mp4",
+    model_checkpoint_path="checkpoints/run_best.pt",
+    output_path="predictions/sample.json",
+    inference_threshold=0.25,
 )
 ```
 
