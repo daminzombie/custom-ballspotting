@@ -207,7 +207,9 @@ class TDeedClip:
             )
         return cls(
             origin=clip,
-            clip_tensor=clip_tensor.float(),
+            # Keep frames as uint8 until the train/inference loop moves the batch to GPU.
+            # Converting 720p clips to float32 on CPU makes collation and H2D copies 4x larger.
+            clip_tensor=clip_tensor,
             label_ids=label_ids,
             displacement=displacement,
         )

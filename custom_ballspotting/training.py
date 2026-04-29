@@ -100,9 +100,20 @@ def train_model(
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
     scaler = torch.amp.GradScaler("cuda") if config.device == "cuda" else None
-    train_loader = DataLoader(train_dataset, batch_size=config.train_batch_size, shuffle=True)
+    use_cuda = config.device == "cuda"
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=config.train_batch_size,
+        shuffle=True,
+        pin_memory=use_cuda,
+    )
     val_loader = (
-        DataLoader(val_dataset, batch_size=config.val_batch_size, shuffle=False)
+        DataLoader(
+            val_dataset,
+            batch_size=config.val_batch_size,
+            shuffle=False,
+            pin_memory=use_cuda,
+        )
         if val_dataset is not None
         else None
     )
@@ -237,9 +248,10 @@ def run_epoch(
         tqdm_desc = phase
     with context:
         for batch_idx, batch in enumerate(tqdm(loader, total=len(loader), desc=tqdm_desc)):
-            clip_tensor = batch["clip_tensor"].to(device).float()
-            label_ids = batch["label_ids"].to(device).long()
-            displacement = batch["displacement"].to(device).float()
+            use_cuda = device == "cuda"
+            clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
+            label_ids = batch["label_ids"].to(device, non_blocking=use_cuda).long()
+            displacement = batch["displacement"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=not training)
                 logits = outputs["logits"].reshape(-1, NUM_ACTION_CLASSES + 1)

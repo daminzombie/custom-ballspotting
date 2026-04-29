@@ -170,7 +170,12 @@ def infer_video(
     for continuous_clip in video.get_clips(accepted_gap=p["stride"]):
         clips.extend(continuous_clip.split(p["clip_frames_count"], p["overlap"]))
     dataset = CustomTDeedDataset(clips, displacement_radius=0)
-    loader = DataLoader(dataset, batch_size=p["val_batch_size"], shuffle=False)
+    loader = DataLoader(
+        dataset,
+        batch_size=p["val_batch_size"],
+        shuffle=False,
+        pin_memory=p["device"] == "cuda",
+    )
 
     model = CustomTDeedModule(
         clip_len=p["clip_frames_count"],
@@ -213,7 +218,8 @@ def score_video(model, clips, loader, device: str):
     clip_offset = 0
     with torch.no_grad():
         for batch in tqdm(loader, total=len(loader), desc="scoring"):
-            clip_tensor = batch["clip_tensor"].to(device).float()
+            use_cuda = device == "cuda"
+            clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 probs = (
                     torch.softmax(model(clip_tensor, inference=True)["logits"], dim=-1)
