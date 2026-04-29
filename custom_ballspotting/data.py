@@ -261,11 +261,11 @@ class CustomTDeedDataset(Dataset):
 
 
 def find_first_mp4(directory: str | Path) -> str | None:
-    """Return absolute path to the first `.mp4` in `directory` (lexicographic order)."""
+    """Return absolute path to the first ``*.mp4`` regular file (lexicographic by name)."""
     dir_path = Path(directory)
     if not dir_path.is_dir():
         return None
-    mp4s = sorted(dir_path.glob("*.mp4"))
+    mp4s = sorted(p for p in dir_path.glob("*.mp4") if p.is_file())
     return str(mp4s[0].resolve()) if mp4s else None
 
 
@@ -321,7 +321,7 @@ def video_record_from_clip_dir(
 def load_dataset_records(dataset_root: str) -> list[VideoRecord]:
     """
     Load clips under dataset_root (recursive): each folder that contains
-    ``ground_truth.json`` uses the lexicographically first ``*.mp4`` in that folder.
+    ``ground_truth.json`` uses the lexicographically first ``*.mp4`` regular file in that folder.
     """
     root = Path(dataset_root).resolve()
     if not root.is_dir():
