@@ -12,7 +12,9 @@
   "n_layers": 2,
   "sgp_ks": 9,
   "sgp_k": 4,
-  "val_batch_size": 1,
+  "val_batch_size": 8,
   "inference_threshold": 0.2,
-  "extract_frames": true
+  "extract_frames": true,
+  "num_workers": 2,
+  "frame_write_workers": 8
 }

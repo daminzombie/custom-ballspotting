@@ -81,6 +81,7 @@ class VideoRecord:
         target_height: int = 720,
         radius_seconds: int | None = None,
         save_all: bool = False,
+        write_workers: int = 8,
     ):
         os.makedirs(self.frames_path, exist_ok=True)
         forced_frames = {ann.frame_nr(self.metadata_fps) for ann in self.annotations}
@@ -92,14 +93,27 @@ class VideoRecord:
             forced_frames = expanded
 
         label = self.video_id or Path(self.video_path).stem
-        for frame_nr, frame in tqdm(
-            enumerate(self.play_video()), desc=f"extracting {label}"
-        ):
-            if not save_all and frame_nr % stride != 0 and frame_nr not in forced_frames:
-                continue
-            frame = resize_frame(frame, target_height=target_height, target_width=target_width)
-            if not cv2.imwrite(os.path.join(self.frames_path, f"{frame_nr}.jpg"), frame):
+        frames_path = self.frames_path
+
+        def _resize_and_write(frame_nr: int, frame) -> None:
+            resized = resize_frame(frame, target_height=target_height, target_width=target_width)
+            if not cv2.imwrite(os.path.join(frames_path, f"{frame_nr}.jpg"), resized):
                 raise RuntimeError(f"Failed to save frame {frame_nr} for {self.video_path}")
+
+        # Decode is sequential (H.264 requires it). cv2.resize and cv2.imwrite both
+        # release the GIL, so write_workers threads give real CPU parallelism and
+        # overlap with the next cap.read() call, making resize+write nearly free.
+        futures = []
+        with ThreadPoolExecutor(max_workers=write_workers) as pool:
+            for frame_nr, frame in tqdm(
+                enumerate(self.play_video()), desc=f"extracting {label}"
+            ):
+                if not save_all and frame_nr % stride != 0 and frame_nr not in forced_frames:
+                    continue
+                futures.append(pool.submit(_resize_and_write, frame_nr, frame))
+
+            for fut in futures:
+                fut.result()
 
     @property
     def frames(self) -> list[Frame]:
@@ -154,6 +168,14 @@ class VideoClip:
             frames = self.frames[i : i + clip_frames_count]
             if len(frames) == clip_frames_count:
                 clips.append(VideoClip(frames, self.source_video))
+
+        # Always cover the tail. If the last regular clip does not reach the final
+        # frame, anchor one more clip at the end of the sequence. score_video handles
+        # overlapping clips via per-frame score averaging, so double-counting is fine.
+        if len(self.frames) >= clip_frames_count:
+            if not clips or clips[-1].frames[-1] != self.frames[-1]:
+                clips.append(VideoClip(self.frames[-clip_frames_count:], self.source_video))
+
         return clips
 
 

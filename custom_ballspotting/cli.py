@@ -164,6 +164,20 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 @click.option("--inference_threshold", type=float, default=None)
 @click.option("--extract_frames", type=bool, default=None)
 @click.option("--device", type=str, default=None)
+@click.option(
+    "--num_workers",
+    type=int,
+    default=None,
+    help="DataLoader worker processes for prefetching clips during inference. "
+    "2 overlaps CPU data loading with GPU compute on multi-core machines. Default 0.",
+)
+@click.option(
+    "--frame_write_workers",
+    type=int,
+    default=None,
+    help="Threads for parallel frame resize+write during extraction. "
+    "Default 8 saturates multi-core CPUs.",
+)
 def infer_video(config_path: str | None, **kwargs):
     values = merge_values(load_json_config(config_path), kwargs)
     video_dir = values.get("video_dir")

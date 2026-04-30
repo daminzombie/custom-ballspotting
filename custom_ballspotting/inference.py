@@ -122,7 +122,7 @@ def resolve_infer_video_params(
 def infer_video(
     video_path: str,
     model_checkpoint_path: str,
-    output_path: str,
+    output_path: str | None = None,
     clip_frames_count: int | None = None,
     overlap: int | None = None,
     stride: int | None = None,
@@ -138,7 +138,33 @@ def infer_video(
     inference_threshold: float | None = None,
     extract_frames: bool | None = None,
     device: str | None = None,
+    model: "CustomTDeedModule | None" = None,
+    num_workers: int = 0,
+    frame_write_workers: int = 8,
 ) -> dict:
+    """Run ball-action spotting inference on a video and return predictions.
+
+    Parameters
+    ----------
+    output_path:
+        If provided, write the result JSON to this path. If ``None`` (default),
+        skip the file write and only return the dict. Useful for API servers.
+    model:
+        A pre-loaded, warmed-up ``CustomTDeedModule`` already on the target device.
+        When given, model loading is skipped entirely — essential for hot-model
+        servers where one GPU process handles many requests. When ``None`` (default),
+        the model is loaded from ``model_checkpoint_path`` as before.
+    num_workers:
+        Number of DataLoader worker processes for prefetching clips while the GPU
+        runs the current batch. On a single-GPU multi-CPU machine, ``2`` overlaps
+        data loading with GPU compute. Default ``0`` is safe and uses the
+        per-clip ``ThreadPoolExecutor`` inside ``TDeedClip.from_clip`` instead.
+    frame_write_workers:
+        Number of threads for parallel frame resize+write during extraction.
+        OpenCV C-level calls release the GIL so threads give real CPU parallelism.
+        Default ``8`` saturates typical multi-core CPUs without spawning too many
+        threads.
+    """
     p = resolve_infer_video_params(
         model_checkpoint_path,
         clip_frames_count=clip_frames_count,
@@ -165,6 +191,7 @@ def infer_video(
             target_width=p["frame_target_width"],
             target_height=p["frame_target_height"],
             save_all=True,
+            write_workers=frame_write_workers,
         )
     clips = []
     for continuous_clip in video.get_clips(accepted_gap=p["stride"]):
@@ -174,22 +201,24 @@ def infer_video(
         dataset,
         batch_size=p["val_batch_size"],
         shuffle=False,
-        pin_memory=p["device"] == "cuda",
+        num_workers=num_workers,
+        pin_memory=p["device"] == "cuda" and num_workers > 0,
     )
 
-    model = CustomTDeedModule(
-        clip_len=p["clip_frames_count"],
-        num_actions=NUM_ACTION_CLASSES,
-        n_layers=p["n_layers"],
-        sgp_ks=p["sgp_ks"],
-        sgp_k=p["sgp_k"],
-        features_model_name=p["features_model_name"],
-        temporal_shift_mode=p["temporal_shift_mode"],
-        gaussian_blur_ks=p["gaussian_blur_kernel_size"],
-    )
-    model.load_all(model_checkpoint_path)
-    model.to(p["device"])
-    model.eval()
+    if model is None:
+        model = CustomTDeedModule(
+            clip_len=p["clip_frames_count"],
+            num_actions=NUM_ACTION_CLASSES,
+            n_layers=p["n_layers"],
+            sgp_ks=p["sgp_ks"],
+            sgp_k=p["sgp_k"],
+            features_model_name=p["features_model_name"],
+            temporal_shift_mode=p["temporal_shift_mode"],
+            gaussian_blur_ks=p["gaussian_blur_kernel_size"],
+        )
+        model.load_all(model_checkpoint_path)
+        model.to(p["device"])
+        model.eval()
 
     scores = score_video(model, clips, loader, device=p["device"])
     predictions = scores_to_predictions(
@@ -198,11 +227,14 @@ def infer_video(
         threshold=p["inference_threshold"],
     )
     result = {"video_path": video.video_path, "predictions": predictions}
-    out_parent = os.path.dirname(os.path.abspath(output_path))
-    if out_parent:
-        os.makedirs(out_parent, exist_ok=True)
-    with open(output_path, "w") as f:
-        json.dump(result, f, indent=2)
+
+    if output_path is not None:
+        out_parent = os.path.dirname(os.path.abspath(output_path))
+        if out_parent:
+            os.makedirs(out_parent, exist_ok=True)
+        with open(output_path, "w") as f:
+            json.dump(result, f, indent=2)
+
     return result
 
 
