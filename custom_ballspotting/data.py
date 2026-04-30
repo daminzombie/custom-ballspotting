@@ -150,6 +150,10 @@ class VideoRecord:
 class VideoClip:
     frames: list[Frame]
     source_video: VideoRecord
+    #: If set (e.g. short video padded with repeated boundary frames up to temporal length),
+    #: only logits at timesteps ``0 .. n-1`` are fused into ``score_video``. Padded repeats
+    #: still feed the model but must not skew per-frame aggregates.
+    logits_aggregate_timesteps: int | None = None
 
     @property
     def has_events(self) -> bool:
@@ -159,12 +163,34 @@ class VideoClip:
     def unique_annotations(self) -> list[Annotation]:
         return [frame.annotation for frame in self.frames if frame.annotation is not None]
 
-    def split(self, clip_frames_count: int, overlap: int) -> list["VideoClip"]:
+    def split(
+        self, clip_frames_count: int, overlap: int, *, pad_if_shorter: bool = False
+    ) -> list["VideoClip"]:
         step = clip_frames_count - overlap
         if step <= 0:
             raise ValueError("overlap must be smaller than clip_frames_count")
-        clips = []
-        for i in range(0, len(self.frames), step):
+        clips: list[VideoClip] = []
+        n = len(self.frames)
+        if n == 0:
+            return clips
+
+        if n < clip_frames_count:
+            if not pad_if_shorter:
+                return clips
+
+            # Inference-only: temporal model requires ``clip_frames_count`` tensors. Pad using
+            # the final extracted frame; ``logits_aggregate_timesteps`` skips padded timesteps
+            # during score fusion. Training callers keep ``pad_if_shorter=False`` (skip shorts).
+            tail = list(self.frames) + [self.frames[-1]] * (clip_frames_count - n)
+            return [
+                VideoClip(
+                    tail,
+                    self.source_video,
+                    logits_aggregate_timesteps=n,
+                )
+            ]
+
+        for i in range(0, n, step):
             frames = self.frames[i : i + clip_frames_count]
             if len(frames) == clip_frames_count:
                 clips.append(VideoClip(frames, self.source_video))
@@ -172,7 +198,7 @@ class VideoClip:
         # Always cover the tail. If the last regular clip does not reach the final
         # frame, anchor one more clip at the end of the sequence. score_video handles
         # overlapping clips via per-frame score averaging, so double-counting is fine.
-        if len(self.frames) >= clip_frames_count:
+        if n >= clip_frames_count:
             if not clips or clips[-1].frames[-1] != self.frames[-1]:
                 clips.append(VideoClip(self.frames[-clip_frames_count:], self.source_video))
 

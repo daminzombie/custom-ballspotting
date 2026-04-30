@@ -1,6 +1,7 @@
 import inspect
 import json
 import logging
+import math
 import os
 
 import numpy as np
@@ -144,6 +145,13 @@ def infer_video(
 ) -> dict:
     """Run ball-action spotting inference on a video and return predictions.
 
+    Every extracted frame is fused into dense per-frame logits: clipping uses sliding
+    windows, and overlaps are averaged in :func:`score_video`. Larger ``val_batch_size``
+    only batches clips for throughput and does **not** drop frames.
+
+    Videos shorter than one temporal clip (``clip_frames_count``) are padded for the model;
+    padded tail timesteps are ignored when accumulating scores.
+
     Parameters
     ----------
     output_path:
@@ -194,8 +202,14 @@ def infer_video(
             write_workers=frame_write_workers,
         )
     clips = []
+    clip_len = int(p["clip_frames_count"])
+    overlap_frames = int(p["overlap"])
     for continuous_clip in video.get_clips(accepted_gap=p["stride"]):
-        clips.extend(continuous_clip.split(p["clip_frames_count"], p["overlap"]))
+        clips.extend(continuous_clip.split(clip_len, overlap_frames, pad_if_shorter=True))
+    if not clips:
+        raise ValueError(
+            "No inference clips could be formed (video may have produced zero decoded frames)."
+        )
     dataset = CustomTDeedDataset(clips, displacement_radius=0)
     loader = DataLoader(
         dataset,
@@ -221,12 +235,19 @@ def infer_video(
         model.eval()
 
     scores = score_video(model, clips, loader, device=p["device"])
+    fps_infer = float(video.metadata_fps)
+    if not math.isfinite(fps_infer) or fps_infer <= 0:
+        fps_infer = 25.0
     predictions = scores_to_predictions(
         scores,
-        fps=video.metadata_fps,
+        fps=fps_infer,
         threshold=p["inference_threshold"],
     )
-    result = {"video_path": video.video_path, "predictions": predictions}
+    result = {
+        "video_path": video.video_path,
+        "fps": fps_infer,
+        "predictions": predictions,
+    }
 
     if output_path is not None:
         out_parent = os.path.dirname(os.path.abspath(output_path))
@@ -264,7 +285,11 @@ def score_video(model, clips, loader, device: str):
                 )
             for batch_idx in range(probs.shape[0]):
                 clip = clips[clip_offset + batch_idx]
+                cap = clip.logits_aggregate_timesteps
+                span = len(clip.frames) if cap is None else cap
                 for frame_idx, frame in enumerate(clip.frames):
+                    if frame_idx >= span:
+                        break
                     scores[frame.original_video_frame_nr] += probs[batch_idx, frame_idx]
                     counts[frame.original_video_frame_nr] += 1
             clip_offset += probs.shape[0]
