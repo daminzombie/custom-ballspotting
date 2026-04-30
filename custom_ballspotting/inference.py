@@ -198,6 +198,9 @@ def infer_video(
         threshold=p["inference_threshold"],
     )
     result = {"video_path": video.video_path, "predictions": predictions}
+    out_parent = os.path.dirname(os.path.abspath(output_path))
+    if out_parent:
+        os.makedirs(out_parent, exist_ok=True)
     with open(output_path, "w") as f:
         json.dump(result, f, indent=2)
     return result
