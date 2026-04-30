@@ -91,8 +91,9 @@ class VideoRecord:
                 expanded |= set(range(frame_nr - radius, frame_nr + radius + 1, stride))
             forced_frames = expanded
 
+        label = self.video_id or Path(self.video_path).stem
         for frame_nr, frame in tqdm(
-            enumerate(self.play_video()), desc=f"extracting {self.video_id}"
+            enumerate(self.play_video()), desc=f"extracting {label}"
         ):
             if not save_all and frame_nr % stride != 0 and frame_nr not in forced_frames:
                 continue
