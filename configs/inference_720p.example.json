@@ -1,5 +1,5 @@
 {
-  "video_path": "../.data/custom-bas/c393c79762f34df4bc156815193708.mp4/720p.mp4",
+  "video_path": "../.data/947a939af2894430be81f165ba07ff.mp4/720p.mp4",
   "model_checkpoint_path": "../checkpoints/custom_posttrain_from_custom_20260429_193215_best.pt",
   "output_path": "../predictions/sample_predictions_720p.json",
   "clip_frames_count": 100,
@@ -12,7 +12,7 @@
   "n_layers": 2,
   "sgp_ks": 9,
   "sgp_k": 4,
-  "val_batch_size": 8,
+  "val_batch_size": 2,
   "inference_threshold": 0.2,
   "extract_frames": true,
   "num_workers": 2,

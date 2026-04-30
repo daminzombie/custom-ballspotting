@@ -64,7 +64,7 @@ class CustomTDeedModule(nn.Module):
         )
 
     def forward(self, x, inference: bool = False):
-        x = x / 255.0
+        x = x.div_(255.0)
         batch_size, clip_len, channels, height, width = x.shape
         x = x.view(batch_size, clip_len, channels, height, width)
         if not inference:
