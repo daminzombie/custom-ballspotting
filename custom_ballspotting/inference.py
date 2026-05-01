@@ -12,6 +12,7 @@ from tqdm import tqdm
 from custom_ballspotting.actions import (
     ACTION_CONFIGS,
     NUM_ACTION_CLASSES,
+    NUM_TEAM_ACTION_CLASSES,
     index_to_label,
 )
 from custom_ballspotting.checkpoints import read_checkpoint_metadata
@@ -70,6 +71,13 @@ def resolve_infer_video_params(
                 f"but this install has NUM_ACTION_CLASSES={NUM_ACTION_CLASSES}. "
                 "Use a checkpoint trained with the same Action enum / actions.py, or "
                 "align the code with the checkpoint."
+            )
+        n_team_saved = meta.get("num_team_action_classes")
+        if n_team_saved is not None and int(n_team_saved) != NUM_TEAM_ACTION_CLASSES:
+            raise ValueError(
+                f"Checkpoint expects num_team_action_classes={n_team_saved} (see metadata), "
+                f"but this install has NUM_TEAM_ACTION_CLASSES={NUM_TEAM_ACTION_CLASSES}. "
+                "Use a checkpoint trained with the same Action enum / actions.py."
             )
     else:
         _logger.warning(
@@ -268,7 +276,7 @@ def score_video(model, clips, loader, device: str):
     if not clips:
         raise ValueError("No clips generated for inference.")
     last_frame = max(frame.original_video_frame_nr for clip in clips for frame in clip.frames)
-    scores = np.zeros((last_frame + 1, NUM_ACTION_CLASSES + 1), dtype=np.float32)
+    scores = np.zeros((last_frame + 1, NUM_TEAM_ACTION_CLASSES + 1), dtype=np.float32)
     counts = np.zeros((last_frame + 1, 1), dtype=np.float32)
 
     clip_offset = 0
@@ -298,10 +306,11 @@ def score_video(model, clips, loader, device: str):
 
 def scores_to_predictions(scores, fps: float, threshold: float):
     predictions = []
-    for class_index in range(1, NUM_ACTION_CLASSES + 1):
-        action = index_to_label(class_index)
-        if action is None:
+    for class_index in range(1, NUM_TEAM_ACTION_CLASSES + 1):
+        result = index_to_label(class_index)
+        if result is None:
             continue
+        action, team = result
         class_scores = scores[:, class_index]
         min_score = max(threshold, ACTION_CONFIGS[action].min_score)
         candidate_indices = np.where(class_scores >= min_score)[0]
@@ -317,6 +326,7 @@ def scores_to_predictions(scores, fps: float, threshold: float):
             predictions.append(
                 {
                     "label": action.value,
+                    "team": team.value,
                     "position": position,
                     "gameTime": format_game_time(position),
                     "confidence": float(class_scores[frame_idx]),

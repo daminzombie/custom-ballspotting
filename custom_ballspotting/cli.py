@@ -14,7 +14,7 @@ from custom_ballspotting.training import TrainConfig, train_from_dataset
 
 @click.group()
 def cli():
-    """Custom no-team ball action spotting CLI."""
+    """Custom team ball action spotting CLI."""
 
 
 @cli.command("extract-frames")

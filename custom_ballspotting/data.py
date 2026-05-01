@@ -15,7 +15,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms.v2.functional import hflip
 from tqdm import tqdm
 
-from custom_ballspotting.actions import Action, label_to_index
+from custom_ballspotting.actions import Action, Team, label_to_index
 from custom_ballspotting.augmentations import (
     augment_with_camera_movement,
     crop_video,
@@ -29,6 +29,7 @@ GROUND_TRUTH_JSON = "ground_truth.json"
 class Annotation:
     label: Action
     position: int
+    team: Team = Team.LEFT
 
     def frame_nr(self, fps: float) -> int:
         return int(self.position / 1000 * fps)
@@ -226,10 +227,14 @@ class TDeedClip:
         num_frames = len(clip.frames)
         label_ids = torch.zeros(num_frames, dtype=torch.long)
         displacement = torch.zeros(num_frames, dtype=torch.float32)
+
+        flip = random.random() < flip_proba
+
         for idx, frame in enumerate(clip.frames):
             if frame.annotation is None:
                 continue
-            label_idx = label_to_index(frame.annotation.label)
+            team = frame.annotation.team.flip() if flip else frame.annotation.team
+            label_idx = label_to_index(frame.annotation.label, team)
             valid_offsets = range(
                 max(-displacement_radius, -idx),
                 min(displacement_radius, num_frames - idx - 1) + 1,
@@ -237,8 +242,6 @@ class TDeedClip:
             for offset in valid_offsets:
                 label_ids[idx + offset] = label_idx
                 displacement[idx + offset] = float(offset)
-
-        flip = random.random() < flip_proba
 
         def load_image(path: str):
             img = torchvision.io.read_image(path)
@@ -332,7 +335,12 @@ def annotations_from_ground_truth_payload(
     skip_unknown_labels: bool = True,
     unknown_labels_acc: set[str] | None = None,
 ) -> list[Annotation]:
-    """Parse SoccerNet-style `ground_truth.json` annotations."""
+    """Parse SoccerNet-style `ground_truth.json` annotations.
+
+    Each annotation may optionally carry a ``"team"`` field (``"left"`` or
+    ``"right"``).  When absent or unrecognised the annotation defaults to
+    ``Team.LEFT`` so that legacy datasets without team labels remain usable.
+    """
     out: list[Annotation] = []
     for item in raw.get("annotations", []):
         label_raw = item["label"]
@@ -345,7 +353,12 @@ def annotations_from_ground_truth_payload(
                 continue
             raise
         pos = int(item["position"])
-        out.append(Annotation(label=action, position=pos))
+        team_raw = item.get("team")
+        try:
+            team = Team(team_raw) if team_raw is not None else Team.LEFT
+        except ValueError:
+            team = Team.LEFT
+        out.append(Annotation(label=action, position=pos, team=team))
     return out
 
 

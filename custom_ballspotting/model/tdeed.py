@@ -48,7 +48,7 @@ class CustomTDeedModule(nn.Module):
             k=sgp_k,
             concat=True,
         )
-        self._pred_fine = FCLayers(feat_dim, num_actions + 1)
+        self._pred_fine = FCLayers(feat_dim, 2 * num_actions + 1)
         self._pred_displ = FCLayers(feat_dim, 1)
         self.augmentation = T.Compose(
             [

@@ -1,4 +1,4 @@
-from custom_ballspotting.actions import Action, ACTION_CONFIGS, NUM_ACTION_CLASSES
+from custom_ballspotting.actions import Action, ACTION_CONFIGS, NUM_ACTION_CLASSES, NUM_TEAM_ACTION_CLASSES, Team
 from custom_ballspotting.inference import (
     infer_video,
     resolve_infer_video_params,
@@ -8,8 +8,10 @@ from custom_ballspotting.inference import (
 
 __all__ = [
     "Action",
+    "Team",
     "ACTION_CONFIGS",
     "NUM_ACTION_CLASSES",
+    "NUM_TEAM_ACTION_CLASSES",
     "infer_video",
     "resolve_infer_video_params",
     "score_video",

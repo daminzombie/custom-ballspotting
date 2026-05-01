@@ -11,7 +11,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from custom_ballspotting.actions import ACTION_CONFIGS, Action, NUM_ACTION_CLASSES
+from custom_ballspotting.actions import ACTION_CONFIGS, Action, NUM_ACTION_CLASSES, NUM_TEAM_ACTION_CLASSES
 from custom_ballspotting.checkpoints import render_checkpoint_path, write_checkpoint_metadata
 from custom_ballspotting.data import (
     CustomTDeedDataset,
@@ -136,8 +136,11 @@ def train_model(
     writer = SummaryWriter(log_dir=f"runs/{experiment_name}_{time.time()}")
     writer.add_text("train/config", json.dumps(config.__dict__, indent=2, default=str), 0)
 
+    # Weight vector has 2*N+1 entries: background=1.0, then LEFT-team weights,
+    # then RIGHT-team weights (same per-action weight for both teams).
+    per_action_weights = [ACTION_CONFIGS[action].weight for action in Action]
     class_weights = torch.tensor(
-        [1.0] + [ACTION_CONFIGS[action].weight for action in Action],
+        [1.0] + per_action_weights + per_action_weights,
         dtype=torch.float32,
         device=config.device,
     )
@@ -189,7 +192,8 @@ def train_model(
                 "val_loss": val_loss if val_loader is not None else None,
                 "pretrained_checkpoint_path": pretrained_checkpoint_path,
                 "config": config.__dict__,
-                "num_action_classes": NUM_ACTION_CLASSES,
+                    "num_action_classes": NUM_ACTION_CLASSES,
+                    "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
                 "num_train_clips": len(train_clips),
                 "num_val_clips": len(val_clips),
                 "run_validation": config.run_validation,
@@ -268,7 +272,7 @@ def run_epoch(
             displacement = displacement.float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=not training)
-                logits = outputs["logits"].reshape(-1, NUM_ACTION_CLASSES + 1)
+                logits = outputs["logits"].reshape(-1, NUM_TEAM_ACTION_CLASSES + 1)
                 labels = label_ids.reshape(-1)
                 cls_loss = F.cross_entropy(logits, labels, weight=class_weights)
                 displ_loss = F.mse_loss(outputs["displacement"], displacement)

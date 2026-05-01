@@ -2,6 +2,14 @@ from enum import Enum
 from typing import NamedTuple
 
 
+class Team(str, Enum):
+    LEFT = "left"
+    RIGHT = "right"
+
+    def flip(self) -> "Team":
+        return Team.RIGHT if self == Team.LEFT else Team.LEFT
+
+
 class Action(str, Enum):
     PASS = "pass"
     PASS_RECEIVED = "pass_received"
@@ -56,16 +64,32 @@ ACTION_CLASS_INDEX: dict[str, int] = {
     action.value: idx for idx, action in enumerate(Action)
 }
 NUM_ACTION_CLASSES: int = len(ACTION_CLASS_INDEX)
+# Total foreground classes = N actions × 2 teams; head output = 2*N + 1 (incl. background)
+NUM_TEAM_ACTION_CLASSES: int = 2 * NUM_ACTION_CLASSES
 
 
-def label_to_index(action: Action | str) -> int:
-    """Return the model class index. Background is always 0."""
+def label_to_index(action: Action | str, team: Team = Team.LEFT) -> int:
+    """Return the model class index for a (action, team) pair.
+
+    Layout (background = 0):
+      indices 1 .. N          → LEFT  team, actions[0..N-1]
+      indices N+1 .. 2*N      → RIGHT team, actions[0..N-1]
+    """
     action = Action(action)
-    return ACTION_CLASS_INDEX[action.value] + 1
+    base = ACTION_CLASS_INDEX[action.value] + 1  # 1-based
+    if team == Team.RIGHT:
+        base += NUM_ACTION_CLASSES
+    return base
 
 
-def index_to_label(index: int) -> Action | None:
+def index_to_label(index: int) -> tuple[Action, Team] | None:
+    """Decode a class index back to (Action, Team), or None for background (0)."""
     if index == 0:
         return None
     actions = list(Action)
-    return actions[index - 1]
+    if index <= NUM_ACTION_CLASSES:
+        return actions[index - 1], Team.LEFT
+    right_index = index - NUM_ACTION_CLASSES
+    if right_index <= NUM_ACTION_CLASSES:
+        return actions[right_index - 1], Team.RIGHT
+    return None
