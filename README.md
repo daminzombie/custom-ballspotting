@@ -1,12 +1,12 @@
 # custom-ballspotting
 
-`custom-ballspotting` is a reusable Python package for no-team ball action spotting with custom labels. It keeps the useful T-DEED/DUDEK ideas: a RegNet + temporal shift backbone, SGP-Mixer temporal head, displacement loss, class weighting, frame/clip sampling, and video augmentations. It removes SoccerNet team-specific assumptions, so the model output is:
+`custom-ballspotting` is a reusable Python package for **team** ball action spotting with custom labels. It follows the same two-heads design as DUDEK: a RegNet + temporal shift backbone, SGP-Mixer temporal head, displacement loss, class weighting, frame/clip sampling, and video augmentations. Each action is modelled separately for the LEFT and RIGHT team, so the model output is:
 
 ```text
-background + N custom actions
+background + N×LEFT actions + N×RIGHT actions   →   2*N + 1 classes
 ```
 
-For the current action set, `N = 19`, so the classifier has `20` classes.
+For the current action set, `N = 19`, so the classifier has `39` classes.
 
 ## Package Design
 
@@ -20,7 +20,7 @@ custom_ballspotting/
   inference.py     # reusable inference API
   cli.py           # thin command-line wrapper
   model/
-    tdeed.py       # no-team T-DEED model
+    tdeed.py       # team T-DEED model (2*N+1 head)
     layers.py      # SGP-Mixer and temporal shift layers
     shift.py
 ```
@@ -107,12 +107,13 @@ The loader walks **`dataset_root`** recursively for **`ground_truth.json`**. Eac
 
 ### `ground_truth.json` format
 
-Files must contain a **`annotations`** array. Each element is one event:
+Files must contain an **`annotations`** array. Each element is one event:
 
-| Field       | Type    | Meaning |
-|------------|---------|---------|
-| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (for example **`pass`**, **`free_kick`**, **`shot`**). SoccerNet CSV-style snake_case labels map here as plain strings. |
+| Field | Type | Meaning |
+|---|---|---|
+| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`pass`**, **`free_kick`**, **`shot`**). |
 | **`position`** | integer | Time of the event in **milliseconds** from the start of that video file. |
+| **`team`** | string | **`"left"`** or **`"right"`**. Optional — defaults to **`"left"`** when absent or unrecognised, so legacy datasets without team labels still load. |
 
 Unknown **`label`** values are **skipped** (with one summary warning naming the unknown types).
 
@@ -121,13 +122,13 @@ Example:
 ```json
 {
   "annotations": [
-    { "label": "pass", "position": 14240 },
-    { "label": "shot", "position": 250400 }
+    { "label": "pass",  "position": 14240,  "team": "left" },
+    { "label": "shot",  "position": 250400, "team": "right" }
   ]
 }
 ```
 
-A top-level object with extra keys besides **`annotations`** is fine; unknown keys outside this structure are unused. Rows whose **`label`** is not in **`Action`** are skipped.
+A top-level object with extra keys besides **`annotations`** is fine; unknown keys are unused. Rows whose **`label`** is not in **`Action`** are skipped.
 
 Example folder layout:
 
@@ -287,7 +288,7 @@ For each saved best checkpoint, the trainer also writes a sidecar metadata file:
 checkpoints/custom_final_product_posttrain_720p_20260428_073012_best.metadata.json
 ```
 
-The metadata records the experiment name, epoch, **`selection_metric`** (**`train_loss`** or **`val_loss`**), **`best_metric`**, source checkpoint, training **`config`** (including **`run_validation`**), **`num_action_classes`**, and train/validation clip counts.
+The metadata records the experiment name, epoch, **`selection_metric`** (**`train_loss`** or **`val_loss`**), **`best_metric`**, source checkpoint, training **`config`** (including **`run_validation`**), **`num_action_classes`**, **`num_team_action_classes`** (always `2 × num_action_classes`), and train/validation clip counts.
 
 For inference, set `model_checkpoint_path` to the exact timestamped checkpoint
 you want to evaluate. This is intentional: it avoids silently using the wrong
@@ -295,7 +296,7 @@ run when several experiments exist.
 
 ## Posttrain From T-DEED/SoccerNetBall
 
-Use the T-DEED checkpoint as a backbone initializer and train a new no-team custom head on your final product dataset:
+Use the T-DEED checkpoint as a backbone initializer and train a new team-aware `2*N+1` head on your final product dataset:
 
 ```bash
 custom-ballspotting posttrain --config configs/final_posttrain_from_tdeed.example.json
@@ -321,10 +322,10 @@ _features.*
 _temp_fine.*
 ```
 
-The custom classifier head is new:
+The custom classifier head is initialised fresh:
 
 ```text
-background + 19 custom actions
+background + 19×LEFT + 19×RIGHT   →   39 classes
 ```
 
 This is the recommended path when your custom dataset is small.
@@ -374,7 +375,7 @@ When you train with this package, the best **`*.pt`** file is saved next to **`*
 
 If **`metadata`** is missing (for example an exported weight file only), a warning is logged and built-in defaults are used; supply **`clip_frames_count`**, **`overlap`**, **`frame_targets`**, and architecture flags yourself so they match how the model was trained.
 
-Training saves **`num_action_classes`** in metadata. If it does not match **`NUM_ACTION_CLASSES`** in your current **`actions.py`**, inference raises a clear error (label order and logits would be wrong).
+Training saves **`num_action_classes`** and **`num_team_action_classes`** in metadata. If either does not match the current **`actions.py`**, inference raises a clear error (label order and logits would be wrong).
 
 From a posttrained checkpoint:
 
@@ -421,9 +422,11 @@ Output format:
 ```json
 {
   "video_path": "videos/sample.mp4",
+  "fps": 25.0,
   "predictions": [
     {
       "label": "pass",
+      "team": "left",
       "position": 14240,
       "gameTime": "1 - 00:14",
       "confidence": 0.78
@@ -432,7 +435,7 @@ Output format:
 }
 ```
 
-Inference applies per-class `min_score` and `tolerance_seconds` from `ACTION_CONFIGS`.
+Each prediction now includes a **`team`** field (`"left"` or `"right"`). Inference applies per-class `min_score` and `tolerance_seconds` from `ACTION_CONFIGS`, running NMS independently for each `(action, team)` class.
 
 ## Python API
 
@@ -499,7 +502,7 @@ train_model(
 
 ## Recommended Workflow
 
-1. Define or update `custom_ballspotting/actions.py`.
+1. Define or update `custom_ballspotting/actions.py`. Ensure your `ground_truth.json` files include a `"team"` field per annotation (`"left"` or `"right"`); annotations without it default to `"left"`.
 2. Arrange clip folders under **`dataset_root`**: each clip directory contains **`ground_truth.json`** and one **`*.mp4`** (see [Dataset layout](#dataset-layout)).
 3. Extract frames (`extract-frames --config …` with **`dataset_root`** in the JSON).
 4. Posttrain from a strong T-DEED/SoccerNetBall checkpoint (`posttrain --config …`).
