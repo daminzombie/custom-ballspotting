@@ -177,6 +177,7 @@ def train_model(
         f"log_every_steps={config.log_every_steps}",
         flush=True,
     )
+    train_start = time.perf_counter()
     for epoch in range(config.nr_epochs):
         print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
         train_loss = run_epoch(
@@ -247,14 +248,22 @@ def train_model(
             if should_save:
                 best_loss_metric = criterion_loss
 
+        epochs_done = epoch + 1
+        total_elapsed = time.perf_counter() - train_start
+        avg_epoch_s = total_elapsed / epochs_done
+        remaining_epochs = config.nr_epochs - epochs_done
+        train_eta_s = avg_epoch_s * remaining_epochs
         summary_parts = [
-            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs}",
+            f"Epoch summary epoch={epochs_done}/{config.nr_epochs}",
             f"train_loss={train_loss:.6f}",
         ]
         if val_loader is not None:
             summary_parts.append(f"val_loss={val_loss:.6f}")
         if epoch_map is not None:
             summary_parts.append(f"val_map={epoch_map:.6f}")
+        summary_parts.append(f"epoch={_format_duration(avg_epoch_s)}")
+        if remaining_epochs > 0:
+            summary_parts.append(f"train_eta={_format_duration(train_eta_s)}")
         if should_save:
             summary_parts.append("★ checkpoint saved")
         print(" ".join(summary_parts), flush=True)
@@ -343,6 +352,7 @@ def run_epoch(
         tqdm_desc = f"{phase} epoch {epoch_index + 1}/{nr_epochs}"
     else:
         tqdm_desc = phase
+    epoch_start = time.perf_counter()
     with context:
         progress = tqdm(
             loader,
@@ -399,6 +409,10 @@ def run_epoch(
                 writer.add_scalar(f"loss_step/{phase}_displacement", displ_loss_value, global_step)
             if (batch_idx + 1) % log_every_steps == 0 or (batch_idx + 1) == len(loader):
                 lr = optimizer.param_groups[0]["lr"] if optimizer is not None else None
+                steps_done = batch_idx + 1
+                elapsed = time.perf_counter() - epoch_start
+                avg_step_s = elapsed / steps_done
+                epoch_eta_s = avg_step_s * (len(loader) - steps_done)
                 print(
                     _format_step_log(
                         phase=phase,
@@ -411,10 +425,22 @@ def run_epoch(
                         cls_loss=cls_loss_value,
                         displ_loss=displ_loss_value,
                         lr=lr,
+                        avg_step_s=avg_step_s,
+                        epoch_eta_s=epoch_eta_s,
                     ),
                     flush=True,
                 )
     return total_loss / max(1, len(loader))
+
+
+def _format_duration(seconds: float) -> str:
+    """Format a duration in seconds as H:MM:SS or M:SS."""
+    s = int(seconds)
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    if h > 0:
+        return f"{h}:{m:02d}:{s:02d}"
+    return f"{m}:{s:02d}"
 
 
 def _format_step_log(
@@ -429,9 +455,16 @@ def _format_step_log(
     cls_loss: float,
     displ_loss: float,
     lr: float | None,
+    avg_step_s: float | None = None,
+    epoch_eta_s: float | None = None,
 ) -> str:
     epoch_value = f"{epoch_index + 1}/{nr_epochs}" if epoch_index is not None and nr_epochs is not None else "unknown"
     lr_value = f" lr={lr:.8f}" if lr is not None else ""
+    timing_value = ""
+    if avg_step_s is not None:
+        timing_value += f" step={avg_step_s:.2f}s"
+    if epoch_eta_s is not None:
+        timing_value += f" eta={_format_duration(epoch_eta_s)}"
     return (
         f"{phase} step "
         f"epoch={epoch_value} "
@@ -441,6 +474,7 @@ def _format_step_log(
         f"cls_loss={cls_loss:.6f} "
         f"displacement_loss={displ_loss:.6f}"
         f"{lr_value}"
+        f"{timing_value}"
     )
 
 
