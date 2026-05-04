@@ -24,6 +24,7 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
 CONFIG="${REPO_ROOT}/configs/posttrain_from_custom.example.json"
+export PYTHONUNBUFFERED=1
 
 if [[ -x "${REPO_ROOT}/.venv/bin/custom-ballspotting" ]]; then
   exec "${REPO_ROOT}/.venv/bin/custom-ballspotting" posttrain --config "${CONFIG}"

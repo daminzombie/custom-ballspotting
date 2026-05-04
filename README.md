@@ -187,6 +187,8 @@ Paths inside config files are resolved **relative to the config file’s directo
 
 By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **lowest validation loss** (`1.5 * CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected inference thresholds/windows on a validation run.
 
+Training logs print one flushed line per train/validation batch by default (`log_every_steps=1`), including current loss, running average loss, CE loss, displacement loss, and LR for train steps. In non-interactive runs such as PM2, dynamic `tqdm` progress bars are disabled so `pm2 logs` shows stable line-based output. Increase **`log_every_steps`** if per-batch logs are too noisy.
+
 The default workflow extracts 720p frames:
 
 ```json

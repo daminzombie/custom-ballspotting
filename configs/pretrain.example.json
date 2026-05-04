@@ -2,6 +2,7 @@
   "dataset_root": "../data/custom/dataset",
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_pretrain",
+  "log_every_steps": 1,
   "clip_frames_count": 100,
   "overlap": 88,
   "displacement_radius": 4,

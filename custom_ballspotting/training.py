@@ -1,6 +1,7 @@
 import json
 import os
 import random
+import sys
 import time
 from dataclasses import dataclass
 
@@ -47,6 +48,7 @@ class TrainConfig:
     run_validation: bool = True  # select checkpoints by held-out validation loss by default
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
+    log_every_steps: int = 1
     random_seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -146,6 +148,14 @@ def train_model(
     )
     best_metric = float("inf")
     best_metric_name = "val_loss" if config.run_validation and val_loader is not None else "train_loss"
+    print(
+        "Training started "
+        f"train_clips={len(train_clips)} val_clips={len(val_clips)} "
+        f"train_steps_per_epoch={len(train_loader)} "
+        f"val_steps_per_epoch={len(val_loader) if val_loader is not None else 0} "
+        f"log_every_steps={config.log_every_steps}",
+        flush=True,
+    )
     for epoch in range(config.nr_epochs):
         print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
         train_loss = run_epoch(
@@ -160,6 +170,8 @@ def train_model(
             epoch_index=epoch,
             nr_epochs=config.nr_epochs,
             phase="train",
+            writer=writer,
+            log_every_steps=config.log_every_steps,
         )
         if val_loader is not None:
             val_loss = run_epoch(
@@ -170,12 +182,23 @@ def train_model(
                 epoch_index=epoch,
                 nr_epochs=config.nr_epochs,
                 phase="val",
+                writer=writer,
+                log_every_steps=config.log_every_steps,
             )
         else:
             val_loss = float("nan")
         writer.add_scalar("loss/train", train_loss, epoch)
         if val_loader is not None:
             writer.add_scalar("loss/val", val_loss, epoch)
+        writer.flush()
+        print(
+            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs} "
+            f"train_loss={train_loss:.6f} "
+            f"val_loss={val_loss:.6f}" if val_loader is not None else
+            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs} "
+            f"train_loss={train_loss:.6f}",
+            flush=True,
+        )
         criterion_loss = val_loss if val_loader is not None else train_loss
         should_save = criterion_loss == criterion_loss and criterion_loss < best_metric  # not NaN
         if should_save:
@@ -244,10 +267,13 @@ def run_epoch(
     epoch_index: int | None = None,
     nr_epochs: int | None = None,
     phase: str = "train",
+    writer: SummaryWriter | None = None,
+    log_every_steps: int = 1,
 ):
     training = optimizer is not None
     model.train(training)
     total_loss = 0.0
+    log_every_steps = max(1, log_every_steps)
     if training:
         optimizer.zero_grad()
     context = torch.enable_grad() if training else torch.no_grad()
@@ -256,7 +282,13 @@ def run_epoch(
     else:
         tqdm_desc = phase
     with context:
-        for batch_idx, batch in enumerate(tqdm(loader, total=len(loader), desc=tqdm_desc)):
+        progress = tqdm(
+            loader,
+            total=len(loader),
+            desc=tqdm_desc,
+            disable=not sys.stderr.isatty(),
+        )
+        for batch_idx, batch in enumerate(progress):
             use_cuda = device == "cuda"
             clip_tensor = batch["clip_tensor"]
             label_ids = batch["label_ids"]
@@ -277,7 +309,11 @@ def run_epoch(
                 cls_loss = F.cross_entropy(logits, labels, weight=class_weights)
                 displ_loss = F.mse_loss(outputs["displacement"], displacement)
                 loss = 1.5 * cls_loss + displ_loss
-            total_loss += float(loss.detach().cpu())
+            loss_value = float(loss.detach().cpu())
+            cls_loss_value = float(cls_loss.detach().cpu())
+            displ_loss_value = float(displ_loss.detach().cpu())
+            total_loss += loss_value
+            running_loss = total_loss / (batch_idx + 1)
             if training:
                 backward_only = (batch_idx + 1) % acc_grad_iter != 0
                 if scaler is None:
@@ -293,7 +329,57 @@ def run_epoch(
                         scaler.update()
                         optimizer.zero_grad()
                         scheduler.step()
+            if writer is not None:
+                global_step = (epoch_index or 0) * len(loader) + batch_idx
+                writer.add_scalar(f"loss_step/{phase}", loss_value, global_step)
+                writer.add_scalar(f"loss_step/{phase}_running", running_loss, global_step)
+                writer.add_scalar(f"loss_step/{phase}_cls", cls_loss_value, global_step)
+                writer.add_scalar(f"loss_step/{phase}_displacement", displ_loss_value, global_step)
+            if (batch_idx + 1) % log_every_steps == 0 or (batch_idx + 1) == len(loader):
+                lr = optimizer.param_groups[0]["lr"] if optimizer is not None else None
+                print(
+                    _format_step_log(
+                        phase=phase,
+                        epoch_index=epoch_index,
+                        nr_epochs=nr_epochs,
+                        batch_idx=batch_idx,
+                        num_batches=len(loader),
+                        loss=loss_value,
+                        running_loss=running_loss,
+                        cls_loss=cls_loss_value,
+                        displ_loss=displ_loss_value,
+                        lr=lr,
+                    ),
+                    flush=True,
+                )
     return total_loss / max(1, len(loader))
+
+
+def _format_step_log(
+    *,
+    phase: str,
+    epoch_index: int | None,
+    nr_epochs: int | None,
+    batch_idx: int,
+    num_batches: int,
+    loss: float,
+    running_loss: float,
+    cls_loss: float,
+    displ_loss: float,
+    lr: float | None,
+) -> str:
+    epoch_value = f"{epoch_index + 1}/{nr_epochs}" if epoch_index is not None and nr_epochs is not None else "unknown"
+    lr_value = f" lr={lr:.8f}" if lr is not None else ""
+    return (
+        f"{phase} step "
+        f"epoch={epoch_value} "
+        f"step={batch_idx + 1}/{num_batches} "
+        f"loss={loss:.6f} "
+        f"running_loss={running_loss:.6f} "
+        f"cls_loss={cls_loss:.6f} "
+        f"displacement_loss={displ_loss:.6f}"
+        f"{lr_value}"
+    )
 
 
 def split_by_video(

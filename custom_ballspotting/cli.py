@@ -80,6 +80,7 @@ def _train_options(command):
     command = click.option("--train_split", type=float, default=None)(command)
     command = click.option("--enforce_train_epoch_size", type=int, default=None)(command)
     command = click.option("--enforce_val_epoch_size", type=int, default=None)(command)
+    command = click.option("--log_every_steps", type=int, default=None)(command)
     command = click.option("--random_seed", type=int, default=None)(command)
     command = click.option("--device", type=str, default=None)(command)
     command = click.option(

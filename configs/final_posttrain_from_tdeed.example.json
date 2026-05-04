@@ -4,6 +4,7 @@
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_final_product_posttrain_720p",
   "run_validation": true,
+  "log_every_steps": 1,
   "clip_frames_count": 100,
   "overlap": 88,
   "displacement_radius": 4,
