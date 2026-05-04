@@ -10,7 +10,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from custom_ballspotting.actions import (
-    ACTION_CONFIGS,
+    Action,
     NUM_ACTION_CLASSES,
     NUM_TEAM_ACTION_CLASSES,
     index_to_label,
@@ -23,6 +23,53 @@ from custom_ballspotting.data import (
 from custom_ballspotting.model.tdeed import CustomTDeedModule
 
 _logger = logging.getLogger(__name__)
+
+
+DEFAULT_DECODE_THRESHOLDS: dict[str, float] = {
+    Action.PASS.value: 0.20,
+    Action.PASS_RECEIVED.value: 0.20,
+    Action.FREE_KICK.value: 0.25,
+    Action.GOAL_KICK.value: 0.25,
+    Action.CORNER.value: 0.25,
+    Action.THROW_IN.value: 0.25,
+    Action.RECOVERY.value: 0.25,
+    Action.TACKLE.value: 0.30,
+    Action.INTERCEPTION.value: 0.40,
+    Action.BALL_OUT_OF_PLAY.value: 0.45,
+    Action.CLEARANCE.value: 0.40,
+    Action.TAKE_ON.value: 0.40,
+    Action.SUBSTITUTION.value: 0.50,
+    Action.BLOCK.value: 0.45,
+    Action.AERIAL_DUEL.value: 0.40,
+    Action.SHOT.value: 0.40,
+    Action.SAVE.value: 0.45,
+    Action.FOUL.value: 0.50,
+    Action.GOAL.value: 0.50,
+}
+
+DEFAULT_DECODE_NMS_WINDOW_FRAMES: dict[str, int] = {
+    # These are duplicate-decoding windows, not evaluator match tolerances.
+    # Keep fast ball actions small so genuine quick sequences can survive.
+    Action.PASS.value: 4,
+    Action.PASS_RECEIVED.value: 4,
+    Action.FREE_KICK.value: 8,
+    Action.GOAL_KICK.value: 8,
+    Action.CORNER.value: 8,
+    Action.THROW_IN.value: 8,
+    Action.RECOVERY.value: 8,
+    Action.TACKLE.value: 8,
+    Action.INTERCEPTION.value: 6,
+    Action.BALL_OUT_OF_PLAY.value: 12,
+    Action.CLEARANCE.value: 8,
+    Action.TAKE_ON.value: 8,
+    Action.SUBSTITUTION.value: 40,
+    Action.BLOCK.value: 8,
+    Action.AERIAL_DUEL.value: 6,
+    Action.SHOT.value: 8,
+    Action.SAVE.value: 8,
+    Action.FOUL.value: 12,
+    Action.GOAL.value: 12,
+}
 
 
 def _coerce_infer_param(
@@ -54,6 +101,10 @@ def resolve_infer_video_params(
     gaussian_blur_kernel_size: int | None = None,
     val_batch_size: int | None = None,
     inference_threshold: float | None = None,
+    decode_thresholds: dict[str, float] | None = None,
+    decode_nms_window_frames: dict[str, int] | None = None,
+    use_displacement_refinement: bool | None = None,
+    displacement_max_frames: int | None = None,
     extract_frames: bool | None = None,
     device: str | None = None,
 ) -> dict:
@@ -92,6 +143,14 @@ def resolve_infer_video_params(
     device_resolved = device if device is not None else ("cuda" if torch.cuda.is_available() else "cpu")
     extract_resolved = True if extract_frames is None else extract_frames
     threshold_resolved = 0.2 if inference_threshold is None else inference_threshold
+    thresholds_resolved = dict(DEFAULT_DECODE_THRESHOLDS)
+    thresholds_resolved.update(decode_thresholds or {})
+    nms_windows_resolved = dict(DEFAULT_DECODE_NMS_WINDOW_FRAMES)
+    nms_windows_resolved.update(decode_nms_window_frames or {})
+    use_displacement_resolved = (
+        True if use_displacement_refinement is None else use_displacement_refinement
+    )
+    displacement_max_resolved = 4 if displacement_max_frames is None else displacement_max_frames
 
     return {
         "clip_frames_count": int(
@@ -123,6 +182,10 @@ def resolve_infer_video_params(
         ),
         "val_batch_size": int(_coerce_infer_param("val_batch_size", val_batch_size, train_cfg, 1)),
         "inference_threshold": float(threshold_resolved),
+        "decode_thresholds": {str(k): float(v) for k, v in thresholds_resolved.items()},
+        "decode_nms_window_frames": {str(k): int(v) for k, v in nms_windows_resolved.items()},
+        "use_displacement_refinement": bool(use_displacement_resolved),
+        "displacement_max_frames": int(displacement_max_resolved),
         "extract_frames": bool(extract_resolved),
         "device": device_resolved,
     }
@@ -145,6 +208,10 @@ def infer_video(
     gaussian_blur_kernel_size: int | None = None,
     val_batch_size: int | None = None,
     inference_threshold: float | None = None,
+    decode_thresholds: dict[str, float] | None = None,
+    decode_nms_window_frames: dict[str, int] | None = None,
+    use_displacement_refinement: bool | None = None,
+    displacement_max_frames: int | None = None,
     extract_frames: bool | None = None,
     device: str | None = None,
     model: "CustomTDeedModule | None" = None,
@@ -196,6 +263,10 @@ def infer_video(
         gaussian_blur_kernel_size=gaussian_blur_kernel_size,
         val_batch_size=val_batch_size,
         inference_threshold=inference_threshold,
+        decode_thresholds=decode_thresholds,
+        decode_nms_window_frames=decode_nms_window_frames,
+        use_displacement_refinement=use_displacement_refinement,
+        displacement_max_frames=displacement_max_frames,
         extract_frames=extract_frames,
         device=device,
     )
@@ -242,7 +313,13 @@ def infer_video(
         model.to(p["device"])
         model.eval()
 
-    scores = score_video(model, clips, loader, device=p["device"])
+    scores, displacements = score_video(
+        model,
+        clips,
+        loader,
+        device=p["device"],
+        return_displacements=True,
+    )
     fps_infer = float(video.metadata_fps)
     if not math.isfinite(fps_infer) or fps_infer <= 0:
         fps_infer = 25.0
@@ -250,6 +327,10 @@ def infer_video(
         scores,
         fps=fps_infer,
         threshold=p["inference_threshold"],
+        decode_thresholds=p["decode_thresholds"],
+        decode_nms_window_frames=p["decode_nms_window_frames"],
+        displacements=displacements if p["use_displacement_refinement"] else None,
+        displacement_max_frames=p["displacement_max_frames"],
     )
     result = {
         "video_path": video.video_path,
@@ -272,11 +353,12 @@ def infer_video_param_names() -> frozenset[str]:
     return frozenset(inspect.signature(infer_video).parameters)
 
 
-def score_video(model, clips, loader, device: str):
+def score_video(model, clips, loader, device: str, return_displacements: bool = False):
     if not clips:
         raise ValueError("No clips generated for inference.")
     last_frame = max(frame.original_video_frame_nr for clip in clips for frame in clip.frames)
     scores = np.zeros((last_frame + 1, NUM_TEAM_ACTION_CLASSES + 1), dtype=np.float32)
+    displacement_sums = np.zeros(last_frame + 1, dtype=np.float32)
     counts = np.zeros((last_frame + 1, 1), dtype=np.float32)
 
     clip_offset = 0
@@ -285,12 +367,9 @@ def score_video(model, clips, loader, device: str):
             use_cuda = device == "cuda"
             clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
-                probs = (
-                    torch.softmax(model(clip_tensor, inference=True)["logits"], dim=-1)
-                    .detach()
-                    .cpu()
-                    .numpy()
-                )
+                outputs = model(clip_tensor, inference=True)
+                probs = torch.softmax(outputs["logits"], dim=-1).detach().cpu().numpy()
+                displacements = outputs["displacement"].detach().cpu().numpy()
             for batch_idx in range(probs.shape[0]):
                 clip = clips[clip_offset + batch_idx]
                 cap = clip.logits_aggregate_timesteps
@@ -298,13 +377,32 @@ def score_video(model, clips, loader, device: str):
                 for frame_idx, frame in enumerate(clip.frames):
                     if frame_idx >= span:
                         break
-                    scores[frame.original_video_frame_nr] += probs[batch_idx, frame_idx]
-                    counts[frame.original_video_frame_nr] += 1
+                    original_frame = frame.original_video_frame_nr
+                    scores[original_frame] += probs[batch_idx, frame_idx]
+                    displacement_sums[original_frame] += displacements[batch_idx, frame_idx]
+                    counts[original_frame] += 1
             clip_offset += probs.shape[0]
-    return scores / np.maximum(counts, 1.0)
+    averaged_scores = scores / np.maximum(counts, 1.0)
+    if not return_displacements:
+        return averaged_scores
+    averaged_displacements = displacement_sums / np.maximum(counts[:, 0], 1.0)
+    return averaged_scores, averaged_displacements
 
 
-def scores_to_predictions(scores, fps: float, threshold: float):
+def scores_to_predictions(
+    scores,
+    fps: float,
+    threshold: float,
+    decode_thresholds: dict[str, float] | None = None,
+    decode_nms_window_frames: dict[str, int] | None = None,
+    displacements: np.ndarray | None = None,
+    displacement_max_frames: int = 4,
+):
+    thresholds = dict(DEFAULT_DECODE_THRESHOLDS)
+    thresholds.update(decode_thresholds or {})
+    nms_windows = dict(DEFAULT_DECODE_NMS_WINDOW_FRAMES)
+    nms_windows.update(decode_nms_window_frames or {})
+
     predictions = []
     for class_index in range(1, NUM_TEAM_ACTION_CLASSES + 1):
         result = index_to_label(class_index)
@@ -312,16 +410,22 @@ def scores_to_predictions(scores, fps: float, threshold: float):
             continue
         action, team = result
         class_scores = scores[:, class_index]
-        min_score = max(threshold, ACTION_CONFIGS[action].min_score)
-        candidate_indices = np.where(class_scores >= min_score)[0]
+        min_score = max(threshold, thresholds.get(action.value, threshold))
+        candidate_indices = local_peak_indices(class_scores, min_score)
         if candidate_indices.size == 0:
             continue
-        kept = non_maximum_suppression(
+        candidates = refine_prediction_candidates(
             candidate_indices,
             class_scores,
-            window_frames=int(ACTION_CONFIGS[action].tolerance_seconds * fps),
+            displacements,
+            displacement_max_frames=displacement_max_frames,
+            last_frame=scores.shape[0] - 1,
         )
-        for frame_idx in kept:
+        kept = non_maximum_suppression_candidates(
+            candidates,
+            window_frames=nms_windows.get(action.value, 6),
+        )
+        for frame_idx, confidence in kept:
             position = int(frame_idx / fps * 1000)
             predictions.append(
                 {
@@ -329,11 +433,70 @@ def scores_to_predictions(scores, fps: float, threshold: float):
                     "team": team.value,
                     "position": position,
                     "gameTime": format_game_time(position),
-                    "confidence": float(class_scores[frame_idx]),
+                    "confidence": confidence,
                 }
             )
     predictions.sort(key=lambda item: item["position"])
     return predictions
+
+
+def local_peak_indices(scores: np.ndarray, threshold: float) -> np.ndarray:
+    """Return one best frame per contiguous above-threshold score island."""
+    candidate_indices = np.where(scores >= threshold)[0]
+    if candidate_indices.size == 0:
+        return candidate_indices
+
+    peaks: list[int] = []
+    start = int(candidate_indices[0])
+    prev = start
+    for raw_idx in candidate_indices[1:]:
+        idx = int(raw_idx)
+        if idx == prev + 1:
+            prev = idx
+            continue
+        peaks.append(best_index_in_span(scores, start, prev))
+        start = prev = idx
+    peaks.append(best_index_in_span(scores, start, prev))
+    return np.asarray(peaks, dtype=np.int64)
+
+
+def best_index_in_span(scores: np.ndarray, start: int, end: int) -> int:
+    span_scores = scores[start : end + 1]
+    return int(start + np.argmax(span_scores))
+
+
+def refine_prediction_candidates(
+    peak_indices: np.ndarray,
+    class_scores: np.ndarray,
+    displacements: np.ndarray | None,
+    *,
+    displacement_max_frames: int,
+    last_frame: int,
+) -> list[tuple[int, float]]:
+    candidates: list[tuple[int, float]] = []
+    max_abs = max(0, int(displacement_max_frames))
+    for raw_idx in peak_indices:
+        peak_idx = int(raw_idx)
+        refined_idx = peak_idx
+        if displacements is not None and max_abs > 0:
+            displacement = float(displacements[peak_idx])
+            if math.isfinite(displacement) and abs(displacement) <= max_abs:
+                refined_idx = int(round(peak_idx - displacement))
+                refined_idx = max(0, min(last_frame, refined_idx))
+        candidates.append((refined_idx, float(class_scores[peak_idx])))
+    return candidates
+
+
+def non_maximum_suppression_candidates(
+    candidates: list[tuple[int, float]],
+    window_frames: int,
+) -> list[tuple[int, float]]:
+    ranked = sorted(candidates, key=lambda item: item[1], reverse=True)
+    kept: list[tuple[int, float]] = []
+    for frame_idx, confidence in ranked:
+        if all(abs(frame_idx - kept_frame) > window_frames for kept_frame, _ in kept):
+            kept.append((int(frame_idx), float(confidence)))
+    return sorted(kept, key=lambda item: item[0])
 
 
 def non_maximum_suppression(indices, scores, window_frames: int):

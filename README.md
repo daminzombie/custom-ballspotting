@@ -185,9 +185,7 @@ Paths inside config files are resolved **relative to the config file’s directo
 
 ### Training defaults (dudek-aligned)
 
-By default, **`run_validation`** is **`false`**: every clip folder under **`dataset_root`** contributes to training (no held-out validation split), each epoch runs **training only**, and the best checkpoint is chosen by **lowest training loss** (`1.5 * CE + displacement`, same formulation as validation when enabled).
-
-Set **`"run_validation": true`** in JSON (or **`--run-validation`** / **`--no-run-validation`** on the CLI to override JSON) for a **`train_split`** train/val split and model selection by **validation loss**.
+By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **lowest validation loss** (`1.5 * CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected inference thresholds/windows on a validation run.
 
 The default workflow extracts 720p frames:
 

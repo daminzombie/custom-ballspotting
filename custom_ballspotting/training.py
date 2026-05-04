@@ -43,8 +43,8 @@ class TrainConfig:
     camera_move_proba: float = 0.1
     crop_proba: float = 0.1
     even_choice_proba: float = 0.0
-    train_split: float = 0.8  # used only when run_validation is true
-    run_validation: bool = False  # if false: all clips train, checkpoint on lowest train loss
+    train_split: float = 0.9  # used only when run_validation is true
+    run_validation: bool = True  # select checkpoints by held-out validation loss by default
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
     random_seed: int = 42

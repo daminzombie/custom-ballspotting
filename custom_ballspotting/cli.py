@@ -162,6 +162,12 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 @click.option("--gaussian_blur_kernel_size", type=int, default=None)
 @click.option("--val_batch_size", type=int, default=None)
 @click.option("--inference_threshold", type=float, default=None)
+@click.option(
+    "--use-displacement-refinement/--no-use-displacement-refinement",
+    "use_displacement_refinement",
+    default=None,
+)
+@click.option("--displacement_max_frames", type=int, default=None)
 @click.option("--extract_frames", type=bool, default=None)
 @click.option("--device", type=str, default=None)
 @click.option(

@@ -1,9 +1,9 @@
 {
   "dataset_root": "../.data/custom-bas/soccernet/score/turbo_result",
-  "pretrained_checkpoint_path": "../checkpoints/custom_posttrain_from_custom_20260429_193215_best.pt",
+  "pretrained_checkpoint_path": "../checkpoints/custom_posttrain_from_custom_20260503_105124_best.pt",
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_posttrain_from_custom",
-  "run_validation": false,
+  "run_validation": true,
   "clip_frames_count": 100,
   "overlap": 68,
   "displacement_radius": 4,
