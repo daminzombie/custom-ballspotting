@@ -20,6 +20,7 @@ from custom_ballspotting.data import (
     build_clips,
     load_dataset_records,
 )
+from custom_ballspotting.eval import val_map
 from custom_ballspotting.model.tdeed import CustomTDeedModule
 
 
@@ -45,7 +46,10 @@ class TrainConfig:
     crop_proba: float = 0.1
     even_choice_proba: float = 0.0
     train_split: float = 0.9  # used only when run_validation is true
-    run_validation: bool = True  # select checkpoints by held-out validation loss by default
+    run_validation: bool = True  # select checkpoints by held-out validation metric by default
+    eval_metric: str = "map"  # "map" or "loss"; "map" requires run_validation=True
+    map_delta_frames: int = 5  # frame-count tolerance for mAP TP matching
+    map_start_epoch: int = 3  # skip mAP eval for early epochs; fall back to val_loss before this
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
     log_every_steps: int = 1
@@ -146,13 +150,30 @@ def train_model(
         dtype=torch.float32,
         device=config.device,
     )
-    best_metric = float("inf")
-    best_metric_name = "val_loss" if config.run_validation and val_loader is not None else "train_loss"
+    use_map = config.eval_metric == "map" and config.run_validation and val_loader is not None
+    if config.eval_metric == "map" and not config.run_validation:
+        print(
+            "Warning: eval_metric='map' requires run_validation=True; falling back to 'loss'.",
+            flush=True,
+        )
+        use_map = False
+
+    # best_metric direction depends on the active criterion:
+    #   loss → minimise (start at +inf); map → maximise (start at 0).
+    # Before map_start_epoch we also fall back to val_loss so the first useful
+    # checkpoint is not withheld until mAP evaluation kicks in.
+    best_loss_metric = float("inf")       # tracks best loss regardless of eval_metric
+    best_map_metric = 0.0
+    best_metric_name = (
+        "val_map" if use_map else
+        ("val_loss" if config.run_validation and val_loader is not None else "train_loss")
+    )
     print(
         "Training started "
         f"train_clips={len(train_clips)} val_clips={len(val_clips)} "
         f"train_steps_per_epoch={len(train_loader)} "
         f"val_steps_per_epoch={len(val_loader) if val_loader is not None else 0} "
+        f"eval_metric={config.eval_metric} map_start_epoch={config.map_start_epoch} "
         f"log_every_steps={config.log_every_steps}",
         flush=True,
     )
@@ -187,44 +208,85 @@ def train_model(
             )
         else:
             val_loss = float("nan")
+
         writer.add_scalar("loss/train", train_loss, epoch)
         if val_loader is not None:
             writer.add_scalar("loss/val", val_loss, epoch)
+
+        # mAP validation — only when configured and past warm-up period
+        epoch_map: float | None = None
+        if use_map and epoch >= config.map_start_epoch:
+            print(
+                f"  Computing mAP@{config.map_delta_frames}f on {len(val_clips)} val clips …",
+                flush=True,
+            )
+            model.eval()
+            epoch_map = val_map(
+                model,
+                val_clips,
+                device=config.device,
+                val_batch_size=config.val_batch_size,
+                delta_frames=config.map_delta_frames,
+            )
+            model.train()
+            writer.add_scalar("val/map", epoch_map, epoch)
+            print(f"  val_map={epoch_map:.6f}", flush=True)
+
         writer.flush()
-        print(
-            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs} "
-            f"train_loss={train_loss:.6f} "
-            f"val_loss={val_loss:.6f}" if val_loader is not None else
-            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs} "
+
+        # Determine whether to save a new best checkpoint
+        if use_map and epoch >= config.map_start_epoch and epoch_map is not None:
+            should_save = epoch_map > best_map_metric
+            if should_save:
+                best_map_metric = epoch_map
+        else:
+            # Loss-based fallback: covers (a) eval_metric="loss" and (b) early
+            # epochs before mAP kicks in when eval_metric="map".
+            criterion_loss = val_loss if val_loader is not None else train_loss
+            should_save = criterion_loss == criterion_loss and criterion_loss < best_loss_metric
+            if should_save:
+                best_loss_metric = criterion_loss
+
+        summary_parts = [
+            f"Epoch summary epoch={epoch + 1}/{config.nr_epochs}",
             f"train_loss={train_loss:.6f}",
-            flush=True,
-        )
-        criterion_loss = val_loss if val_loader is not None else train_loss
-        should_save = criterion_loss == criterion_loss and criterion_loss < best_metric  # not NaN
+        ]
+        if val_loader is not None:
+            summary_parts.append(f"val_loss={val_loss:.6f}")
+        if epoch_map is not None:
+            summary_parts.append(f"val_map={epoch_map:.6f}")
         if should_save:
-            best_metric = criterion_loss
+            summary_parts.append("★ checkpoint saved")
+        print(" ".join(summary_parts), flush=True)
+
+        if should_save:
             os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
             torch.save(model.state_dict(), save_as)
+            active_metric_name = (
+                "val_map" if (use_map and epoch >= config.map_start_epoch)
+                else ("val_loss" if val_loader is not None else "train_loss")
+            )
+            active_best = (
+                best_map_metric if (use_map and epoch >= config.map_start_epoch)
+                else best_loss_metric
+            )
             metric_payload = {
                 "checkpoint_path": save_as,
                 "experiment_name": experiment_name,
                 "epoch": epoch,
-                "selection_metric": best_metric_name,
-                "best_metric": best_metric,
+                "selection_metric": active_metric_name,
+                "best_metric": active_best,
                 "train_loss": train_loss,
                 "val_loss": val_loss if val_loader is not None else None,
+                "val_map": epoch_map,
                 "pretrained_checkpoint_path": pretrained_checkpoint_path,
                 "config": config.__dict__,
-                    "num_action_classes": NUM_ACTION_CLASSES,
-                    "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
+                "num_action_classes": NUM_ACTION_CLASSES,
+                "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
                 "num_train_clips": len(train_clips),
                 "num_val_clips": len(val_clips),
                 "run_validation": config.run_validation,
             }
-            if val_loader is not None:
-                metric_payload["best_val_loss"] = best_metric  # backwards-compatible alias
-            else:
-                metric_payload["best_train_loss"] = best_metric
             write_checkpoint_metadata(save_as, metric_payload)
     return model
 

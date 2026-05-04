@@ -3,6 +3,7 @@ import json
 import logging
 import math
 import os
+import sys
 
 import numpy as np
 import torch
@@ -363,7 +364,7 @@ def score_video(model, clips, loader, device: str, return_displacements: bool = 
 
     clip_offset = 0
     with torch.no_grad():
-        for batch in tqdm(loader, total=len(loader), desc="scoring"):
+        for batch in tqdm(loader, total=len(loader), desc="scoring", disable=not sys.stderr.isatty()):
             use_cuda = device == "cuda"
             clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
