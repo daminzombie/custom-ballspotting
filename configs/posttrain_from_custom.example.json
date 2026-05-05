@@ -14,7 +14,7 @@
   "sgp_k": 4,
   "nr_epochs": 10,
   "learning_rate": 0.0008,
-  "train_batch_size": 4,
+  "train_batch_size": 2,
   "val_batch_size": 1,
   "acc_grad_iter": 8,
   "flip_proba": 0.1,

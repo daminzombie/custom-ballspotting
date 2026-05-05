@@ -139,8 +139,11 @@ def train_model(
         ],
         milestones=[max(1, warmup_steps)],
     )
-    writer = SummaryWriter(log_dir=f"runs/{experiment_name}_{time.time()}")
+    run_log_dir = f"runs/{experiment_name}_{time.time()}"
+    writer = SummaryWriter(log_dir=run_log_dir)
     writer.add_text("train/config", json.dumps(config.__dict__, indent=2, default=str), 0)
+
+    epoch_summary_path = os.path.join(run_log_dir, "epoch_summary.log")
 
     # Weight vector has 2*N+1 entries: background=1.0, then LEFT-team weights,
     # then RIGHT-team weights (same per-action weight for both teams).
@@ -164,139 +167,150 @@ def train_model(
     # checkpoint is not withheld until mAP evaluation kicks in.
     best_loss_metric = float("inf")       # tracks best loss regardless of eval_metric
     best_map_metric = 0.0
-    best_metric_name = (
-        "val_map" if use_map else
-        ("val_loss" if config.run_validation and val_loader is not None else "train_loss")
-    )
     print(
         "Training started "
         f"train_clips={len(train_clips)} val_clips={len(val_clips)} "
         f"train_steps_per_epoch={len(train_loader)} "
         f"val_steps_per_epoch={len(val_loader) if val_loader is not None else 0} "
         f"eval_metric={config.eval_metric} map_start_epoch={config.map_start_epoch} "
-        f"log_every_steps={config.log_every_steps}",
+        f"log_every_steps={config.log_every_steps} epoch_summary={epoch_summary_path}",
         flush=True,
     )
     train_start = time.perf_counter()
-    for epoch in range(config.nr_epochs):
-        print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
-        train_loss = run_epoch(
-            model,
-            train_loader,
-            config.device,
-            class_weights,
-            optimizer=optimizer,
-            scaler=scaler,
-            scheduler=scheduler,
-            acc_grad_iter=config.acc_grad_iter,
-            epoch_index=epoch,
-            nr_epochs=config.nr_epochs,
-            phase="train",
-            writer=writer,
-            log_every_steps=config.log_every_steps,
+    epoch_summary_log_file = None
+    try:
+        epoch_summary_log_file = open(epoch_summary_path, "w", encoding="utf-8")
+        epoch_summary_log_file.write(
+            f"# training_started experiment={experiment_name} "
+            f"t={time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n"
         )
-        if val_loader is not None:
-            val_loss = run_epoch(
+        epoch_summary_log_file.flush()
+        for epoch in range(config.nr_epochs):
+            print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
+            train_loss = run_epoch(
                 model,
-                val_loader,
+                train_loader,
                 config.device,
                 class_weights,
+                optimizer=optimizer,
+                scaler=scaler,
+                scheduler=scheduler,
+                acc_grad_iter=config.acc_grad_iter,
                 epoch_index=epoch,
                 nr_epochs=config.nr_epochs,
-                phase="val",
+                phase="train",
                 writer=writer,
                 log_every_steps=config.log_every_steps,
             )
-        else:
-            val_loss = float("nan")
+            if val_loader is not None:
+                val_loss = run_epoch(
+                    model,
+                    val_loader,
+                    config.device,
+                    class_weights,
+                    epoch_index=epoch,
+                    nr_epochs=config.nr_epochs,
+                    phase="val",
+                    writer=writer,
+                    log_every_steps=config.log_every_steps,
+                )
+            else:
+                val_loss = float("nan")
 
-        writer.add_scalar("loss/train", train_loss, epoch)
-        if val_loader is not None:
-            writer.add_scalar("loss/val", val_loss, epoch)
+            writer.add_scalar("loss/train", train_loss, epoch)
+            if val_loader is not None:
+                writer.add_scalar("loss/val", val_loss, epoch)
 
-        # mAP validation — only when configured and past warm-up period
-        epoch_map: float | None = None
-        if use_map and epoch >= config.map_start_epoch:
-            print(
-                f"  Computing mAP@{config.map_delta_frames}f on {len(val_clips)} val clips …",
-                flush=True,
-            )
-            model.eval()
-            epoch_map = val_map(
-                model,
-                val_clips,
-                device=config.device,
-                val_batch_size=config.val_batch_size,
-                delta_frames=config.map_delta_frames,
-            )
-            model.train()
-            writer.add_scalar("val/map", epoch_map, epoch)
-            print(f"  val_map={epoch_map:.6f}", flush=True)
+            # mAP validation — only when configured and past warm-up period
+            epoch_map: float | None = None
+            if use_map and epoch >= config.map_start_epoch:
+                print(
+                    f"  Computing mAP@{config.map_delta_frames}f on {len(val_clips)} val clips …",
+                    flush=True,
+                )
+                model.eval()
+                epoch_map = val_map(
+                    model,
+                    val_clips,
+                    device=config.device,
+                    val_batch_size=config.val_batch_size,
+                    delta_frames=config.map_delta_frames,
+                )
+                model.train()
+                writer.add_scalar("val/map", epoch_map, epoch)
+                print(f"  val_map={epoch_map:.6f}", flush=True)
 
-        writer.flush()
+            writer.flush()
 
-        # Determine whether to save a new best checkpoint
-        if use_map and epoch >= config.map_start_epoch and epoch_map is not None:
-            should_save = epoch_map > best_map_metric
+            # Determine whether to save a new best checkpoint
+            if use_map and epoch >= config.map_start_epoch and epoch_map is not None:
+                should_save = epoch_map > best_map_metric
+                if should_save:
+                    best_map_metric = epoch_map
+            else:
+                # Loss-based fallback: covers (a) eval_metric="loss" and (b) early
+                # epochs before mAP kicks in when eval_metric="map".
+                criterion_loss = val_loss if val_loader is not None else train_loss
+                should_save = criterion_loss == criterion_loss and criterion_loss < best_loss_metric
+                if should_save:
+                    best_loss_metric = criterion_loss
+
+            epochs_done = epoch + 1
+            total_elapsed = time.perf_counter() - train_start
+            avg_epoch_s = total_elapsed / epochs_done
+            remaining_epochs = config.nr_epochs - epochs_done
+            train_eta_s = avg_epoch_s * remaining_epochs
+            summary_parts = [
+                f"Epoch summary epoch={epochs_done}/{config.nr_epochs}",
+                f"train_loss={train_loss:.6f}",
+            ]
+            if val_loader is not None:
+                summary_parts.append(f"val_loss={val_loss:.6f}")
+            if epoch_map is not None:
+                summary_parts.append(f"val_map={epoch_map:.6f}")
+            summary_parts.append(f"epoch={_format_duration(avg_epoch_s)}")
+            if remaining_epochs > 0:
+                summary_parts.append(f"train_eta={_format_duration(train_eta_s)}")
             if should_save:
-                best_map_metric = epoch_map
-        else:
-            # Loss-based fallback: covers (a) eval_metric="loss" and (b) early
-            # epochs before mAP kicks in when eval_metric="map".
-            criterion_loss = val_loss if val_loader is not None else train_loss
-            should_save = criterion_loss == criterion_loss and criterion_loss < best_loss_metric
+                summary_parts.append("★ checkpoint saved")
+            summary_line = " ".join(summary_parts)
+            print(summary_line, flush=True)
+            ts = time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime())
+            epoch_summary_log_file.write(ts + summary_line + "\n")
+            epoch_summary_log_file.flush()
+
             if should_save:
-                best_loss_metric = criterion_loss
-
-        epochs_done = epoch + 1
-        total_elapsed = time.perf_counter() - train_start
-        avg_epoch_s = total_elapsed / epochs_done
-        remaining_epochs = config.nr_epochs - epochs_done
-        train_eta_s = avg_epoch_s * remaining_epochs
-        summary_parts = [
-            f"Epoch summary epoch={epochs_done}/{config.nr_epochs}",
-            f"train_loss={train_loss:.6f}",
-        ]
-        if val_loader is not None:
-            summary_parts.append(f"val_loss={val_loss:.6f}")
-        if epoch_map is not None:
-            summary_parts.append(f"val_map={epoch_map:.6f}")
-        summary_parts.append(f"epoch={_format_duration(avg_epoch_s)}")
-        if remaining_epochs > 0:
-            summary_parts.append(f"train_eta={_format_duration(train_eta_s)}")
-        if should_save:
-            summary_parts.append("★ checkpoint saved")
-        print(" ".join(summary_parts), flush=True)
-
-        if should_save:
-            os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
-            torch.save(model.state_dict(), save_as)
-            active_metric_name = (
-                "val_map" if (use_map and epoch >= config.map_start_epoch)
-                else ("val_loss" if val_loader is not None else "train_loss")
-            )
-            active_best = (
-                best_map_metric if (use_map and epoch >= config.map_start_epoch)
-                else best_loss_metric
-            )
-            metric_payload = {
-                "checkpoint_path": save_as,
-                "experiment_name": experiment_name,
-                "epoch": epoch,
-                "selection_metric": active_metric_name,
-                "best_metric": active_best,
-                "train_loss": train_loss,
-                "val_loss": val_loss if val_loader is not None else None,
-                "val_map": epoch_map,
-                "pretrained_checkpoint_path": pretrained_checkpoint_path,
-                "config": config.__dict__,
-                "num_action_classes": NUM_ACTION_CLASSES,
-                "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
-                "num_train_clips": len(train_clips),
-                "num_val_clips": len(val_clips),
-                "run_validation": config.run_validation,
-            }
-            write_checkpoint_metadata(save_as, metric_payload)
+                os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
+                torch.save(model.state_dict(), save_as)
+                active_metric_name = (
+                    "val_map" if (use_map and epoch >= config.map_start_epoch)
+                    else ("val_loss" if val_loader is not None else "train_loss")
+                )
+                active_best = (
+                    best_map_metric if (use_map and epoch >= config.map_start_epoch)
+                    else best_loss_metric
+                )
+                metric_payload = {
+                    "checkpoint_path": save_as,
+                    "experiment_name": experiment_name,
+                    "epoch": epoch,
+                    "selection_metric": active_metric_name,
+                    "best_metric": active_best,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss if val_loader is not None else None,
+                    "val_map": epoch_map,
+                    "pretrained_checkpoint_path": pretrained_checkpoint_path,
+                    "config": config.__dict__,
+                    "num_action_classes": NUM_ACTION_CLASSES,
+                    "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
+                    "num_train_clips": len(train_clips),
+                    "num_val_clips": len(val_clips),
+                    "run_validation": config.run_validation,
+                }
+                write_checkpoint_metadata(save_as, metric_payload)
+    finally:
+        if epoch_summary_log_file is not None:
+            epoch_summary_log_file.close()
     return model
 
 
