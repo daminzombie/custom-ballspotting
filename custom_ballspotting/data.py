@@ -23,6 +23,7 @@ from custom_ballspotting.augmentations import (
 )
 
 GROUND_TRUTH_JSON = "ground_truth.json"
+SOCCERNET_BALL_LABELS_JSON = "Labels-ball.json"
 
 
 @dataclasses.dataclass(frozen=True)
@@ -368,14 +369,16 @@ def video_record_from_clip_dir(
     *,
     unknown_labels_acc: set[str] | None = None,
 ) -> VideoRecord | None:
-    """One clip directory: first `*.mp4` + `ground_truth.json`."""
+    """One clip directory: first `*.mp4` + labels JSON."""
     mp4 = find_first_mp4(clip_dir)
     if mp4 is None:
         return None
-    gt_path = clip_dir / GROUND_TRUTH_JSON
-    if not gt_path.is_file():
+    labels_path = clip_dir / GROUND_TRUTH_JSON
+    if not labels_path.is_file():
+        labels_path = clip_dir / SOCCERNET_BALL_LABELS_JSON
+    if not labels_path.is_file():
         return None
-    with open(gt_path, "r") as f:
+    with open(labels_path, "r") as f:
         raw = json.load(f)
     annotations = annotations_from_ground_truth_payload(
         raw, unknown_labels_acc=unknown_labels_acc
@@ -391,12 +394,16 @@ def video_record_from_clip_dir(
 def load_dataset_records(dataset_root: str) -> list[VideoRecord]:
     """
     Load clips under dataset_root (recursive): each folder that contains
-    ``ground_truth.json`` uses the lexicographically first ``*.mp4`` regular file in that folder.
+    ``ground_truth.json`` or dudek/SoccerNet ``Labels-ball.json`` uses the
+    lexicographically first ``*.mp4`` regular file in that folder.
     """
     root = Path(dataset_root).resolve()
     if not root.is_dir():
         raise FileNotFoundError(f"dataset_root is not a directory: {root}")
-    clip_dirs = sorted({p.parent for p in root.rglob(GROUND_TRUTH_JSON)})
+    clip_dirs = sorted(
+        {p.parent for p in root.rglob(GROUND_TRUTH_JSON)}
+        | {p.parent for p in root.rglob(SOCCERNET_BALL_LABELS_JSON)}
+    )
     unknown_labels: set[str] = set()
     records: list[VideoRecord] = []
     for clip_dir in clip_dirs:

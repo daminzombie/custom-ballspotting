@@ -64,31 +64,24 @@ On this Windows workspace, if you are reusing the DUDEK venv, call:
 ../dude.k/.venv/Scripts/custom-ballspotting.exe --help
 ```
 
-## Custom Actions
+## Action Classes
 
-The action vocabulary is defined in `custom_ballspotting/actions.py`:
+The action vocabulary is defined in `custom_ballspotting/actions.py` and matches dudek's `BASLabel` order/values:
 
 ```python
 class Action(str, Enum):
-    PASS = "pass"
-    PASS_RECEIVED = "pass_received"
-    FREE_KICK = "free_kick"
-    GOAL_KICK = "goal_kick"
-    CORNER = "corner"
-    THROW_IN = "throw_in"
-    RECOVERY = "recovery"
-    TACKLE = "tackle"
-    INTERCEPTION = "interception"
-    BALL_OUT_OF_PLAY = "ball_out_of_play"
-    CLEARANCE = "clearance"
-    TAKE_ON = "take_on"
-    SUBSTITUTION = "substitution"
-    BLOCK = "block"
-    AERIAL_DUEL = "aerial_duel"
-    SHOT = "shot"
-    SAVE = "save"
-    FOUL = "foul"
-    GOAL = "goal"
+    PASS = "PASS"
+    DRIVE = "DRIVE"
+    HEADER = "HEADER"
+    HIGH_PASS = "HIGH PASS"
+    OUT = "OUT"
+    CROSS = "CROSS"
+    THROW_IN = "THROW IN"
+    SHOT = "SHOT"
+    BALL_PLAYER_BLOCK = "BALL PLAYER BLOCK"
+    PLAYER_SUCCESSFUL_TACKLE = "PLAYER SUCCESSFUL TACKLE"
+    FREE_KICK = "FREE KICK"
+    GOAL = "GOAL"
 ```
 
 Each class also has an `ActionConfig`:
@@ -97,13 +90,13 @@ Each class also has an `ActionConfig`:
 ActionConfig(weight, min_score, tolerance_seconds)
 ```
 
-Those values are used for training class weights and inference filtering/NMS. For rare but important classes like `goal`, `foul`, or `save`, a higher class weight is useful when the dataset is small.
+Those values are used for training class weights and inference filtering/NMS.
 
 ## Dataset layout
 
 Training uses clip folders under **`dataset_root`**. Set **`dataset_root`** in your JSON config files (`configs/*.json`); paths are resolved relative to the config file.
 
-The loader walks **`dataset_root`** recursively for **`ground_truth.json`**. Each folder that contains it uses the lexicographically first **`*.mp4`** as the video.
+The loader walks **`dataset_root`** recursively for **`ground_truth.json`** or SoccerNet/dudek **`Labels-ball.json`**. Each folder that contains labels uses the lexicographically first **`*.mp4`** as the video.
 
 ### `ground_truth.json` format
 
@@ -111,7 +104,7 @@ Files must contain an **`annotations`** array. Each element is one event:
 
 | Field | Type | Meaning |
 |---|---|---|
-| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`pass`**, **`free_kick`**, **`shot`**). |
+| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`PASS`**, **`FREE KICK`**, **`SHOT`**). |
 | **`position`** | integer | Time of the event in **milliseconds** from the start of that video file. |
 | **`team`** | string | **`"left"`** or **`"right"`**. Optional — defaults to **`"left"`** when absent or unrecognised, so legacy datasets without team labels still load. |
 
@@ -122,8 +115,8 @@ Example:
 ```json
 {
   "annotations": [
-    { "label": "pass",  "position": 14240,  "team": "left" },
-    { "label": "shot",  "position": 250400, "team": "right" }
+    { "label": "PASS", "position": 14240,  "team": "left" },
+    { "label": "SHOT", "position": 250400, "team": "right" }
   ]
 }
 ```
@@ -425,7 +418,7 @@ Output format:
   "fps": 25.0,
   "predictions": [
     {
-      "label": "pass",
+      "label": "PASS",
       "team": "left",
       "position": 14240,
       "gameTime": "1 - 00:14",
