@@ -218,6 +218,7 @@ class TDeedClip:
     clip_tensor: torch.Tensor
     label_ids: torch.Tensor
     displacement: torch.Tensor
+    profile: dict[str, float] | None = None
 
     @classmethod
     def from_clip(
@@ -283,6 +284,14 @@ class TDeedClip:
         if profile and device is not None and torch.device(device).type == "cuda":
             torch.cuda.synchronize(device)
         aug_done_t = time.perf_counter()
+        profile_metrics = {
+            "label_s": label_done_t - item_start_t,
+            "read_s": read_done_t - label_done_t,
+            "stack_s": stack_done_t - read_done_t,
+            "move_s": move_done_t - stack_done_t,
+            "augment_s": aug_done_t - move_done_t,
+            "total_s": aug_done_t - item_start_t,
+        }
         if profile:
             print(
                 "data profile "
@@ -290,12 +299,12 @@ class TDeedClip:
                 f"frames={num_frames} "
                 f"flip={int(flip)} "
                 f"device={device or 'cpu'} "
-                f"label_s={label_done_t - item_start_t:.4f} "
-                f"read_s={read_done_t - label_done_t:.4f} "
-                f"stack_s={stack_done_t - read_done_t:.4f} "
-                f"move_s={move_done_t - stack_done_t:.4f} "
-                f"augment_s={aug_done_t - move_done_t:.4f} "
-                f"total_s={aug_done_t - item_start_t:.4f}",
+                f"label_s={profile_metrics['label_s']:.4f} "
+                f"read_s={profile_metrics['read_s']:.4f} "
+                f"stack_s={profile_metrics['stack_s']:.4f} "
+                f"move_s={profile_metrics['move_s']:.4f} "
+                f"augment_s={profile_metrics['augment_s']:.4f} "
+                f"total_s={profile_metrics['total_s']:.4f}",
                 flush=True,
             )
         return cls(
@@ -305,6 +314,7 @@ class TDeedClip:
             clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
             label_ids=label_ids.to(device) if device is not None else label_ids,
             displacement=displacement.to(device) if device is not None else displacement,
+            profile=profile_metrics if profile else None,
         )
 
 
@@ -367,11 +377,21 @@ class CustomTDeedDataset(Dataset):
             profile=profile,
             profile_label=f"item={self._profile_seen}/{self.profile_items} idx={idx} requested={original_idx}",
         )
-        return {
+        out = {
             "clip_tensor": item.clip_tensor,
             "label_ids": item.label_ids,
             "displacement": item.displacement,
         }
+        if self.profile_items:
+            metrics = item.profile or {}
+            out["profile_label_s"] = torch.tensor(metrics.get("label_s", 0.0), dtype=torch.float64)
+            out["profile_read_s"] = torch.tensor(metrics.get("read_s", 0.0), dtype=torch.float64)
+            out["profile_stack_s"] = torch.tensor(metrics.get("stack_s", 0.0), dtype=torch.float64)
+            out["profile_move_s"] = torch.tensor(metrics.get("move_s", 0.0), dtype=torch.float64)
+            out["profile_augment_s"] = torch.tensor(metrics.get("augment_s", 0.0), dtype=torch.float64)
+            out["profile_total_s"] = torch.tensor(metrics.get("total_s", 0.0), dtype=torch.float64)
+            out["profile_count"] = torch.tensor(1.0 if item.profile else 0.0, dtype=torch.float64)
+        return out
 
 
 def find_first_mp4(directory: str | Path) -> str | None:

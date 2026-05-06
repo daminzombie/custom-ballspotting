@@ -549,6 +549,18 @@ def run_epoch(
             if profile_this_step:
                 total_profile_s = log_end_t - batch_ready_t
                 data_wait_s = batch_ready_t - prev_step_end
+                data_profile = ""
+                profile_count = float(batch.get("profile_count", torch.tensor(0.0)).sum().item())
+                if profile_count:
+                    data_profile = (
+                        f" data_label_avg_s={float(batch['profile_label_s'].sum().item()) / profile_count:.4f}"
+                        f" data_read_avg_s={float(batch['profile_read_s'].sum().item()) / profile_count:.4f}"
+                        f" data_stack_avg_s={float(batch['profile_stack_s'].sum().item()) / profile_count:.4f}"
+                        f" data_move_avg_s={float(batch['profile_move_s'].sum().item()) / profile_count:.4f}"
+                        f" data_augment_avg_s={float(batch['profile_augment_s'].sum().item()) / profile_count:.4f}"
+                        f" data_total_avg_s={float(batch['profile_total_s'].sum().item()) / profile_count:.4f}"
+                        f" data_profile_items={profile_count:.0f}"
+                    )
                 print(
                     "train profile "
                     f"epoch={epoch_index + 1 if epoch_index is not None else '?'} "
@@ -562,7 +574,8 @@ def run_epoch(
                     f"scalar_sync_s={scalar_end_t - scalar_start_t:.4f} "
                     f"backward_optim_s={backward_end_t - backward_start_t:.4f} "
                     f"tb_log_s={log_end_t - log_start_t:.4f} "
-                    f"total_after_data_s={total_profile_s:.4f}",
+                    f"total_after_data_s={total_profile_s:.4f}"
+                    f"{data_profile}",
                     flush=True,
                 )
             if pbar is not None:
