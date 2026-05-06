@@ -2,6 +2,7 @@ import dataclasses
 import json
 import os
 import random
+import time
 import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import cached_property
@@ -229,7 +230,10 @@ class TDeedClip:
         crop_size: float = 0.9,
         device: str | None = None,
         image_executor: ThreadPoolExecutor | None = None,
+        profile: bool = False,
+        profile_label: str = "",
     ):
+        item_start_t = time.perf_counter()
         num_frames = len(clip.frames)
         label_ids = torch.zeros(num_frames, dtype=torch.long)
         displacement = torch.zeros(num_frames, dtype=torch.float32)
@@ -248,6 +252,7 @@ class TDeedClip:
             for offset in valid_offsets:
                 label_ids[idx + offset] = label_idx
                 displacement[idx + offset] = float(offset)
+        label_done_t = time.perf_counter()
 
         def load_image(path: str):
             img = torchvision.io.read_image(path)
@@ -259,9 +264,14 @@ class TDeedClip:
                 imgs = list(executor.map(load_image, frame_paths))
         else:
             imgs = list(image_executor.map(load_image, frame_paths))
+        read_done_t = time.perf_counter()
         clip_tensor = torch.stack(imgs, dim=0)
+        stack_done_t = time.perf_counter()
         if device is not None:
             clip_tensor = clip_tensor.to(device)
+            if profile and torch.device(device).type == "cuda":
+                torch.cuda.synchronize(device)
+        move_done_t = time.perf_counter()
         if random.random() < camera_move_proba:
             clip_tensor = augment_with_camera_movement(clip_tensor)
         if random.random() < crop_proba:
@@ -270,11 +280,29 @@ class TDeedClip:
                 crop_size_h=int(clip_tensor.shape[2] * crop_size),
                 crop_size_w=int(clip_tensor.shape[3] * crop_size),
             )
+        if profile and device is not None and torch.device(device).type == "cuda":
+            torch.cuda.synchronize(device)
+        aug_done_t = time.perf_counter()
+        if profile:
+            print(
+                "data profile "
+                f"{profile_label} "
+                f"frames={num_frames} "
+                f"flip={int(flip)} "
+                f"device={device or 'cpu'} "
+                f"label_s={label_done_t - item_start_t:.4f} "
+                f"read_s={read_done_t - label_done_t:.4f} "
+                f"stack_s={stack_done_t - read_done_t:.4f} "
+                f"move_s={move_done_t - stack_done_t:.4f} "
+                f"augment_s={aug_done_t - move_done_t:.4f} "
+                f"total_s={aug_done_t - item_start_t:.4f}",
+                flush=True,
+            )
         return cls(
             origin=clip,
-            # Keep frames uint8 through collation; training converts the full batch
-            # once, which avoids many small per-clip GPU casts and lowers loader wait.
-            clip_tensor=clip_tensor,
+            # Match dudek's training path: when training on CUDA, each clip is moved
+            # sample-by-sample before DataLoader collation, avoiding a huge CPU batch copy.
+            clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
             label_ids=label_ids.to(device) if device is not None else label_ids,
             displacement=displacement.to(device) if device is not None else displacement,
         )
@@ -291,6 +319,7 @@ class CustomTDeedDataset(Dataset):
         even_choice_proba: float = 0.0,
         enforced_epoch_size: int | None = None,
         device: str | None = None,
+        profile_items: int = 0,
     ):
         self.clips = clips
         self.displacement_radius = displacement_radius
@@ -301,6 +330,8 @@ class CustomTDeedDataset(Dataset):
         self.enforced_epoch_size = enforced_epoch_size
         self.device = device
         self._image_executor = ThreadPoolExecutor()
+        self.profile_items = profile_items
+        self._profile_seen = 0
         self.clip_ids_by_label: dict[Action, list[int]] = {action: [] for action in Action}
         for idx, clip in enumerate(self.clips):
             for annotation in clip.unique_annotations:
@@ -315,12 +346,16 @@ class CustomTDeedDataset(Dataset):
         return self.enforced_epoch_size or len(self.clips)
 
     def __getitem__(self, idx):
+        original_idx = idx
         if self.enforced_epoch_size is not None:
             idx = random.randrange(len(self.clips))
         if self.even_choice_proba and random.random() < self.even_choice_proba:
             populated = [ids for ids in self.clip_ids_by_label.values() if ids]
             if populated:
                 idx = random.choice(random.choice(populated))
+        profile = self._profile_seen < self.profile_items
+        if profile:
+            self._profile_seen += 1
         item = TDeedClip.from_clip(
             self.clips[idx],
             displacement_radius=self.displacement_radius,
@@ -329,6 +364,8 @@ class CustomTDeedDataset(Dataset):
             crop_proba=self.crop_proba,
             device=self.device,
             image_executor=self._image_executor,
+            profile=profile,
+            profile_label=f"item={self._profile_seen}/{self.profile_items} idx={idx} requested={original_idx}",
         )
         return {
             "clip_tensor": item.clip_tensor,

@@ -107,6 +107,7 @@ def train_model(
         even_choice_proba=config.even_choice_proba,
         enforced_epoch_size=config.enforce_train_epoch_size,
         device=config.device if device_type == "cuda" else None,
+        profile_items=min(config.train_profile_steps * config.train_batch_size, 16),
     )
     val_dataset = (
         CustomTDeedDataset(
