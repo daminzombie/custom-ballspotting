@@ -76,6 +76,10 @@ class TrainConfig:
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
 
+def _device_type(device: str) -> str:
+    return torch.device(device).type
+
+
 def train_model(
     clips: list[VideoClip],
     save_as: str,
@@ -84,6 +88,7 @@ def train_model(
     config: TrainConfig | None = None,
 ) -> CustomTDeedModule:
     config = config or TrainConfig()
+    device_type = _device_type(config.device)
     save_as = render_checkpoint_path(save_as, experiment_name=experiment_name)
     if config.run_validation:
         train_clips, val_clips = split_by_video(clips, config.train_split, config.random_seed)
@@ -98,14 +103,14 @@ def train_model(
         crop_proba=config.crop_proba,
         even_choice_proba=config.even_choice_proba,
         enforced_epoch_size=config.enforce_train_epoch_size,
-        device=config.device if config.device == "cuda" else None,
+        device=config.device if device_type == "cuda" else None,
     )
     val_dataset = (
         CustomTDeedDataset(
             val_clips,
             displacement_radius=config.displacement_radius,
             enforced_epoch_size=config.enforce_val_epoch_size,
-            device=config.device if config.device == "cuda" else None,
+            device=config.device if device_type == "cuda" else None,
         )
         if config.run_validation and val_clips
         else None
@@ -126,8 +131,8 @@ def train_model(
     model.to(config.device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    scaler = torch.amp.GradScaler("cuda") if config.device == "cuda" else None
-    use_cuda = config.device == "cuda"
+    scaler = torch.amp.GradScaler("cuda") if device_type == "cuda" else None
+    use_cuda = device_type == "cuda"
     # When using CUDA, datasets already return CUDA tensors to match dudek's
     # train-challenge input path. Pinned memory only applies to CPU tensors.
     pin_memory = use_cuda and train_dataset.device is None
@@ -430,6 +435,7 @@ def run_epoch(
     log_every_steps: int = 1,
 ):
     training = optimizer is not None
+    device_type = _device_type(device)
     model.train(training)
     total_loss = 0.0
     log_every_steps = max(1, log_every_steps)
@@ -460,20 +466,20 @@ def run_epoch(
             )
             pbar = iterable
         for batch_idx, batch in enumerate(iterable):
-            use_cuda = device == "cuda"
+            use_cuda = device_type == "cuda"
             clip_tensor = batch["clip_tensor"]
             label_ids = batch["label_ids"]
             displacement = batch["displacement"]
-            if clip_tensor.device.type != device:
+            if clip_tensor.device.type != device_type:
                 clip_tensor = clip_tensor.to(device, non_blocking=use_cuda)
-            if label_ids.device.type != device:
+            if label_ids.device.type != device_type:
                 label_ids = label_ids.to(device, non_blocking=use_cuda)
-            if displacement.device.type != device:
+            if displacement.device.type != device_type:
                 displacement = displacement.to(device, non_blocking=use_cuda)
             clip_tensor = clip_tensor.float()
             label_ids = label_ids.long()
             displacement = displacement.float()
-            with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
+            with torch.amp.autocast(device_type=device_type, enabled=use_cuda):
                 outputs = model(clip_tensor, inference=not training)
                 logits = outputs["logits"].reshape(-1, NUM_TEAM_ACTION_CLASSES + 1)
                 labels = label_ids.reshape(-1)
