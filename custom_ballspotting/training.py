@@ -72,6 +72,9 @@ class TrainConfig:
     # With a TTY, a tqdm bar is used instead. Effective plain interval is at least this
     # and at least max(1, min(256, batches // 50)).
     log_every_steps: int = 1
+    # Print detailed timing for the first N train batches. This synchronizes CUDA
+    # around timed sections, so keep it off except when diagnosing throughput.
+    train_profile_steps: int = 0
     random_seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -227,6 +230,7 @@ def train_model(
                 phase="train",
                 writer=writer,
                 log_every_steps=config.log_every_steps,
+                profile_steps=config.train_profile_steps,
             )
             train_wall_s = time.perf_counter() - train_wall_start
             val_wall_s = 0.0
@@ -433,6 +437,7 @@ def run_epoch(
     phase: str = "train",
     writer: SummaryWriter | None = None,
     log_every_steps: int = 1,
+    profile_steps: int = 0,
 ):
     training = optimizer is not None
     device_type = _device_type(device)
@@ -465,11 +470,20 @@ def run_epoch(
                 file=sys.stderr,
             )
             pbar = iterable
+        prev_step_end = time.perf_counter()
         for batch_idx, batch in enumerate(iterable):
+            batch_ready_t = time.perf_counter()
             use_cuda = device_type == "cuda"
+            profile_this_step = training and batch_idx < profile_steps
+
+            def _sync_if_profile() -> None:
+                if profile_this_step and use_cuda:
+                    torch.cuda.synchronize(device)
+
             clip_tensor = batch["clip_tensor"]
             label_ids = batch["label_ids"]
             displacement = batch["displacement"]
+            move_start_t = time.perf_counter()
             if clip_tensor.device.type != device_type:
                 clip_tensor = clip_tensor.to(device, non_blocking=use_cuda)
             if label_ids.device.type != device_type:
@@ -479,6 +493,8 @@ def run_epoch(
             clip_tensor = clip_tensor.float()
             label_ids = label_ids.long()
             displacement = displacement.float()
+            _sync_if_profile()
+            forward_start_t = time.perf_counter()
             with torch.amp.autocast(device_type=device_type, enabled=use_cuda):
                 outputs = model(clip_tensor, inference=not training)
                 logits = outputs["logits"].reshape(-1, NUM_TEAM_ACTION_CLASSES + 1)
@@ -486,12 +502,16 @@ def run_epoch(
                 cls_loss = F.cross_entropy(logits, labels, weight=class_weights)
                 displ_loss = F.mse_loss(outputs["displacement"], displacement)
                 loss = 1.5 * cls_loss + displ_loss
+            _sync_if_profile()
+            scalar_start_t = time.perf_counter()
             loss_value = float(loss.detach().cpu())
             cls_loss_value = float(cls_loss.detach().cpu())
             displ_loss_value = float(displ_loss.detach().cpu())
+            scalar_end_t = time.perf_counter()
             total_loss += loss_value
             steps_done = batch_idx + 1
             running_loss = total_loss / steps_done
+            backward_start_t = time.perf_counter()
             if training:
                 backward_only = (batch_idx + 1) % acc_grad_iter != 0
                 if scaler is None:
@@ -507,7 +527,10 @@ def run_epoch(
                         scaler.update()
                         optimizer.zero_grad()
                         scheduler.step()
+            _sync_if_profile()
+            backward_end_t = time.perf_counter()
             lr_now = optimizer.param_groups[0]["lr"] if optimizer is not None else None
+            log_start_t = time.perf_counter()
             if writer is not None:
                 global_step = (epoch_index or 0) * n_batches + batch_idx
                 writer.add_scalar(f"loss_step/{phase}", loss_value, global_step)
@@ -518,9 +541,29 @@ def run_epoch(
                 )
                 if training and lr_now is not None:
                     writer.add_scalar("train/lr", lr_now, global_step)
+            log_end_t = time.perf_counter()
             elapsed = time.perf_counter() - epoch_start
             avg_step_s = elapsed / steps_done
             epoch_eta_s = avg_step_s * (n_batches - steps_done)
+            if profile_this_step:
+                total_profile_s = log_end_t - batch_ready_t
+                data_wait_s = batch_ready_t - prev_step_end
+                print(
+                    "train profile "
+                    f"epoch={epoch_index + 1 if epoch_index is not None else '?'} "
+                    f"step={steps_done}/{n_batches} "
+                    f"shape={tuple(clip_tensor.shape)} "
+                    f"dtype={clip_tensor.dtype} "
+                    f"device={clip_tensor.device} "
+                    f"data_wait_s={data_wait_s:.4f} "
+                    f"move_s={forward_start_t - move_start_t:.4f} "
+                    f"forward_loss_s={scalar_start_t - forward_start_t:.4f} "
+                    f"scalar_sync_s={scalar_end_t - scalar_start_t:.4f} "
+                    f"backward_optim_s={backward_end_t - backward_start_t:.4f} "
+                    f"tb_log_s={log_end_t - log_start_t:.4f} "
+                    f"total_after_data_s={total_profile_s:.4f}",
+                    flush=True,
+                )
             if pbar is not None:
                 postfix = {
                     "loss": f"{loss_value:.4f}",
@@ -553,6 +596,7 @@ def run_epoch(
                     ),
                     flush=True,
                 )
+            prev_step_end = time.perf_counter()
     return total_loss / max(1, len(loader))
 
 
