@@ -15,6 +15,29 @@ class Team(str, Enum):
         return Team.NOT_APPLICABLE
 
 
+def parse_team_string(raw: str | None) -> Team:
+    """Parse a dataset ``team`` field into :class:`Team`.
+
+    Accepts enum values (``left`` / ``right`` / ``not applicable``), common
+    variants such as ``not_applicable`` or ``n/a``, and falls back to
+    ``Team.LEFT`` for missing or unrecognised values (same behaviour as the
+    previous try/except default).
+    """
+    if raw is None:
+        return Team.LEFT
+    s = str(raw).strip()
+    if not s:
+        return Team.LEFT
+    lower = s.lower()
+    if lower == "n/a":
+        return Team.NOT_APPLICABLE
+    normalized = lower.replace("_", " ")
+    try:
+        return Team(normalized)
+    except ValueError:
+        return Team.LEFT
+
+
 class Action(str, Enum):
     PASS = "pass"
     PASS_RECEIVED = "pass_received"

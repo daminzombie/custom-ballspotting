@@ -16,7 +16,7 @@ from torch.utils.data import Dataset
 from torchvision.transforms.v2.functional import hflip
 from tqdm import tqdm
 
-from custom_ballspotting.actions import Action, Team, label_to_index
+from custom_ballspotting.actions import Action, Team, label_to_index, parse_team_string
 from custom_ballspotting.augmentations import (
     augment_with_camera_movement,
     crop_video,
@@ -421,10 +421,13 @@ def annotations_from_ground_truth_payload(
 ) -> list[Annotation]:
     """Parse SoccerNet-style `ground_truth.json` annotations.
 
-    Each annotation may optionally carry a ``"team"`` field (``"left"`` or
-    ``"right"``).  When absent the annotation defaults to ``Team.LEFT``.
-    When ``random_team_when_na`` is True, ``"not applicable"`` is resolved to
-    left or right at random (same idea as dudek ``random_team_when_no_team``).
+    Each annotation may optionally carry a ``"team"`` field (``"left"``,
+    ``"right"``, or ``"not applicable"``, plus common aliases such as
+    ``"not_applicable"`` or ``"n/a"``).  When absent the annotation defaults
+    to ``Team.LEFT``.  Unrecognised team strings also default to ``Team.LEFT``.
+    When ``random_team_when_na`` is True, ``"not applicable"`` (and recognised
+    NA aliases) is resolved to left or right at random (same idea as dudek
+    ``random_team_when_no_team``).
     """
     out: list[Annotation] = []
     for item in raw.get("annotations", []):
@@ -438,11 +441,7 @@ def annotations_from_ground_truth_payload(
                 continue
             raise
         pos = int(item["position"])
-        team_raw = item.get("team")
-        try:
-            team = Team(team_raw) if team_raw is not None else Team.LEFT
-        except ValueError:
-            team = Team.LEFT
+        team = parse_team_string(item.get("team"))
         if random_team_when_na and team == Team.NOT_APPLICABLE:
             team = Team.RIGHT if random.random() > 0.5 else Team.LEFT
         out.append(Annotation(label=action, position=pos, team=team))
