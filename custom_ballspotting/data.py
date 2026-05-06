@@ -272,9 +272,9 @@ class TDeedClip:
             )
         return cls(
             origin=clip,
-            # Match dudek's training path: when training on CUDA, each clip is moved
-            # sample-by-sample before DataLoader collation, avoiding a huge CPU batch copy.
-            clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
+            # Keep frames uint8 through collation; training converts the full batch
+            # once, which avoids many small per-clip GPU casts and lowers loader wait.
+            clip_tensor=clip_tensor,
             label_ids=label_ids.to(device) if device is not None else label_ids,
             displacement=displacement.to(device) if device is not None else displacement,
         )
