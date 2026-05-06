@@ -352,6 +352,17 @@ class CustomTDeedDataset(Dataset):
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    def __getstate__(self):
+        # ThreadPoolExecutor is not pickleable / pickling queues breaks DataLoader workers
+        # (spawn on Windows picks the whole dataset).
+        state = self.__dict__.copy()
+        state.pop("_image_executor", None)
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        self._image_executor = ThreadPoolExecutor()
+
     def __len__(self):
         return self.enforced_epoch_size or len(self.clips)
 
