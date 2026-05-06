@@ -165,12 +165,15 @@ Commands **`extract-frames`**, **`train`**, **`pretrain`**, and **`posttrain`** 
 Example configs live under `configs/`, including:
 
 ```text
-extract_frames.example.json / extract_frames_720p.example.json
+extract_frames.example.json / extract_frames_720p.example.json / extract_frames_224.example.json
 pretrain.example.json
 posttrain_from_tdeed.example.json / posttrain_from_custom.example.json
+posttrain_soccernet_challenge.example.json
 final_posttrain_from_tdeed.example.json / final_posttrain_from_tdeed_720p.example.json
-inference.example.json / inference_720p.example.json
+inference.example.json / inference_720p.example.json / inference_224.example.json
 ```
+
+Training JSON needs only fields you want to override from **`TrainConfig`** (examples under `configs/` stay minimal). Dudek-aligned defaults already cover **`random_team_when_na`**, internal **`map_mine`** (**`val_map_*`**), **`soccernet_challenge_metric`** (**`at1`**), and **`val_run_soccernet_challenge_map`: `false`**. Add **`soccernet_path`** and **`val_run_soccernet_challenge_map`: `true`** when you want SoccerNet **`mAPevaluateTest`** during validation (install **`soccernet`**: `pip install 'custom-ballspotting[challenge]'`).
 
 Training and frame-extraction configs must include **`dataset_root`** (root of the clip-folder tree). Inference configs use **`video_path`** or **`video_dir`** (directory whose first `*.mp4` is used).
 
@@ -178,9 +181,9 @@ Paths inside config files are resolved **relative to the config file’s directo
 
 ### Training defaults (dudek-aligned)
 
-By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **lowest validation loss** (`1.5 * CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected inference thresholds/windows on a validation run.
+By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **`eval_metric`**. With **`eval_metric`: `"map"`** (default), **`map_mine`** is maximized for selection; if **`val_run_soccernet_challenge_map`** is **`true`** and SoccerNet challenge mAP runs successfully, **`challenge_mAP`** drives checkpoint selection (same idea as dudek **`BASTeamTDeedEvaluator`**). With **`eval_metric`: `"loss"`**, the best checkpoint uses lowest validation loss (`1.5 * CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected hyperparameters on a validation run.
 
-Training logs print one flushed line per train/validation batch by default (`log_every_steps=1`), including current loss, running average loss, CE loss, displacement loss, and LR for train steps. In non-interactive runs such as PM2, dynamic `tqdm` progress bars are disabled so `pm2 logs` shows stable line-based output. Increase **`log_every_steps`** if per-batch logs are too noisy.
+Training logs: with an interactive TTY, **`tqdm`** shows loss, LR, and ETA on stderr; without a TTY (for example PM2), plain lines are printed at a throttled interval. **`epoch_summary.log`** under the TensorBoard run directory records one line per epoch. Increase **`log_every_steps`** if per-step plain logs are too noisy.
 
 The default workflow extracts 720p frames:
 

@@ -23,6 +23,10 @@ from custom_ballspotting.data import (
 from custom_ballspotting.eval import val_map
 from custom_ballspotting.model.tdeed import CustomTDeedModule
 
+# Non-TTY (e.g. PM2, systemd): plain step logs at most every ~N batches so logs stay usable.
+_STEP_LOG_PLAIN_DIVISOR = 50
+_STEP_LOG_PLAIN_CAP = 256
+
 
 @dataclass
 class TrainConfig:
@@ -55,8 +59,18 @@ class TrainConfig:
     val_map_use_snms: bool = True
     val_map_snms_class_window: int = 12
     val_map_snms_threshold: float = 0.01
+    #: Resolve ``Team.NOT_APPLICABLE`` to left/right at random when loading GT (dudek-style).
+    random_team_when_na: bool = True
+    #: Directory or zip with SoccerNet ``Labels-ball.json`` per game (``league/season/match/``).
+    soccernet_path: str | None = None
+    #: Run ``mAPevaluateTest`` / ``average_mAP`` like dudek ``BASTeamTDeedEvaluator.eval``.
+    val_run_soccernet_challenge_map: bool = False
+    soccernet_challenge_metric: str = "at1"
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
+    # Min interval between **plain-text** step lines when stderr is not a TTY (PM2, CI).
+    # With a TTY, a tqdm bar is used instead. Effective plain interval is at least this
+    # and at least max(1, min(256, batches // 50)).
     log_every_steps: int = 1
     random_seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -172,6 +186,7 @@ def train_model(
     # checkpoint is not withheld until mAP evaluation kicks in.
     best_loss_metric = float("inf")       # tracks best loss regardless of eval_metric
     best_map_metric = 0.0
+    best_challenge_mAP = 0.0
     print(
         "Training started "
         f"train_clips={len(train_clips)} val_clips={len(val_clips)} "
@@ -192,6 +207,7 @@ def train_model(
         epoch_summary_log_file.flush()
         for epoch in range(config.nr_epochs):
             print(f"Epoch {epoch + 1}/{config.nr_epochs}", flush=True)
+            train_wall_start = time.perf_counter()
             train_loss = run_epoch(
                 model,
                 train_loader,
@@ -207,7 +223,10 @@ def train_model(
                 writer=writer,
                 log_every_steps=config.log_every_steps,
             )
+            train_wall_s = time.perf_counter() - train_wall_start
+            val_wall_s = 0.0
             if val_loader is not None:
+                val_wall_start = time.perf_counter()
                 val_loss = run_epoch(
                     model,
                     val_loader,
@@ -219,22 +238,30 @@ def train_model(
                     writer=writer,
                     log_every_steps=config.log_every_steps,
                 )
+                val_wall_s = time.perf_counter() - val_wall_start
             else:
                 val_loss = float("nan")
 
             writer.add_scalar("loss/train", train_loss, epoch)
+            writer.add_scalar("timing/train_wall_s", train_wall_s, epoch)
             if val_loader is not None:
                 writer.add_scalar("loss/val", val_loss, epoch)
+                writer.add_scalar("timing/val_wall_s", val_wall_s, epoch)
 
-            # mAP validation — only when configured and past warm-up period
+            # mAP validation — ``map_mine`` plus optional SoccerNet ``mAPevaluateTest`` (dudek eval).
             epoch_map: float | None = None
+            epoch_challenge_map: float | None = None
+            val_map_wall_s: float | None = None
             if use_map and epoch >= config.map_start_epoch:
                 print(
-                    f"  Computing mAP@{config.map_delta_frames}f on {len(val_clips)} val clips …",
+                    f"  Computing val metrics (map_mine"
+                    f"{' + SoccerNet challenge' if config.val_run_soccernet_challenge_map else ''}) "
+                    f"@{config.map_delta_frames}f on {len(val_clips)} val clips …",
                     flush=True,
                 )
                 model.eval()
-                epoch_map = val_map(
+                map_wall_start = time.perf_counter()
+                metrics = val_map(
                     model,
                     val_clips,
                     device=config.device,
@@ -244,19 +271,38 @@ def train_model(
                     use_snms=config.val_map_use_snms,
                     snms_class_window=config.val_map_snms_class_window,
                     snms_threshold=config.val_map_snms_threshold,
+                    soccernet_path=config.soccernet_path,
+                    run_soccernet_challenge_map=config.val_run_soccernet_challenge_map,
+                    soccernet_challenge_metric=config.soccernet_challenge_metric,
                 )
+                val_map_wall_s = time.perf_counter() - map_wall_start
+                epoch_map = metrics.map_mine
+                epoch_challenge_map = metrics.challenge_mAP
                 model.train()
-                writer.add_scalar("val/map", epoch_map, epoch)
-                print(f"  val_map={epoch_map:.6f}", flush=True)
+                writer.add_scalar("val/map_mine", epoch_map, epoch)
+                writer.add_scalar("val/map_wall_s", val_map_wall_s, epoch)
+                if epoch_challenge_map is not None:
+                    writer.add_scalar("val/challenge_mAP", epoch_challenge_map, epoch)
+                parts = [f"  map_mine={epoch_map:.6f}"]
+                if epoch_challenge_map is not None:
+                    parts.append(f"challenge_mAP={epoch_challenge_map:.6f}")
+                parts.append(f"wall_s={val_map_wall_s:.2f}")
+                print(" ".join(parts), flush=True)
 
             writer.flush()
 
-            # Determine whether to save a new best checkpoint
+            # Determine whether to save a new best checkpoint (dudek prefers challenge mAP when present).
+            should_save = False
             if use_map and epoch >= config.map_start_epoch and epoch_map is not None:
-                should_save = epoch_map > best_map_metric
-                if should_save:
-                    best_map_metric = epoch_map
-            else:
+                if epoch_challenge_map is not None:
+                    should_save = epoch_challenge_map > best_challenge_mAP
+                    if should_save:
+                        best_challenge_mAP = epoch_challenge_map
+                else:
+                    should_save = epoch_map > best_map_metric
+                    if should_save:
+                        best_map_metric = epoch_map
+            elif not (use_map and epoch >= config.map_start_epoch):
                 # Loss-based fallback: covers (a) eval_metric="loss" and (b) early
                 # epochs before mAP kicks in when eval_metric="map".
                 criterion_loss = val_loss if val_loader is not None else train_loss
@@ -269,15 +315,29 @@ def train_model(
             avg_epoch_s = total_elapsed / epochs_done
             remaining_epochs = config.nr_epochs - epochs_done
             train_eta_s = avg_epoch_s * remaining_epochs
+            lr_end = optimizer.param_groups[0]["lr"]
             summary_parts = [
                 f"Epoch summary epoch={epochs_done}/{config.nr_epochs}",
                 f"train_loss={train_loss:.6f}",
+                f"train_wall_s={train_wall_s:.2f}",
+                f"lr={lr_end:.6g}",
             ]
             if val_loader is not None:
                 summary_parts.append(f"val_loss={val_loss:.6f}")
+                summary_parts.append(f"val_wall_s={val_wall_s:.2f}")
             if epoch_map is not None:
-                summary_parts.append(f"val_map={epoch_map:.6f}")
-            summary_parts.append(f"epoch={_format_duration(avg_epoch_s)}")
+                summary_parts.append(f"map_mine={epoch_map:.6f}")
+            if epoch_challenge_map is not None:
+                summary_parts.append(f"challenge_mAP={epoch_challenge_map:.6f}")
+            if val_map_wall_s is not None:
+                summary_parts.append(f"val_map_wall_s={val_map_wall_s:.2f}")
+            if use_map and epoch >= config.map_start_epoch:
+                summary_parts.append(f"best_map_mine={best_map_metric:.6f}")
+                if config.val_run_soccernet_challenge_map:
+                    summary_parts.append(f"best_challenge_mAP={best_challenge_mAP:.6f}")
+            else:
+                summary_parts.append(f"best_loss={best_loss_metric:.6f}")
+            summary_parts.append(f"avg_epoch={_format_duration(avg_epoch_s)}")
             if remaining_epochs > 0:
                 summary_parts.append(f"train_eta={_format_duration(train_eta_s)}")
             if should_save:
@@ -291,14 +351,18 @@ def train_model(
             if should_save:
                 os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
                 torch.save(model.state_dict(), save_as)
-                active_metric_name = (
-                    "val_map" if (use_map and epoch >= config.map_start_epoch)
-                    else ("val_loss" if val_loader is not None else "train_loss")
-                )
-                active_best = (
-                    best_map_metric if (use_map and epoch >= config.map_start_epoch)
-                    else best_loss_metric
-                )
+                if epoch_challenge_map is not None:
+                    active_metric_name = "val_challenge_mAP"
+                    active_best = best_challenge_mAP
+                elif use_map and epoch >= config.map_start_epoch:
+                    active_metric_name = "val_map_mine"
+                    active_best = best_map_metric
+                elif val_loader is not None:
+                    active_metric_name = "val_loss"
+                    active_best = best_loss_metric
+                else:
+                    active_metric_name = "train_loss"
+                    active_best = best_loss_metric
                 metric_payload = {
                     "checkpoint_path": save_as,
                     "experiment_name": experiment_name,
@@ -307,7 +371,8 @@ def train_model(
                     "best_metric": active_best,
                     "train_loss": train_loss,
                     "val_loss": val_loss if val_loader is not None else None,
-                    "val_map": epoch_map,
+                    "val_map_mine": epoch_map,
+                    "val_challenge_mAP": epoch_challenge_map,
                     "pretrained_checkpoint_path": pretrained_checkpoint_path,
                     "config": config.__dict__,
                     "num_action_classes": NUM_ACTION_CLASSES,
@@ -331,7 +396,7 @@ def train_from_dataset(
     config: TrainConfig | None = None,
 ) -> CustomTDeedModule:
     config = config or TrainConfig()
-    records = load_dataset_records(dataset_root)
+    records = load_dataset_records(dataset_root, random_team_when_na=config.random_team_when_na)
     clips = build_clips(
         records,
         clip_frames_count=config.clip_frames_count,
@@ -376,14 +441,25 @@ def run_epoch(
     else:
         tqdm_desc = phase
     epoch_start = time.perf_counter()
+    n_batches = len(loader)
+    use_tty = sys.stderr.isatty()
+    plain_log_every = max(
+        log_every_steps,
+        max(1, min(_STEP_LOG_PLAIN_CAP, n_batches // _STEP_LOG_PLAIN_DIVISOR)),
+    )
     with context:
-        progress = tqdm(
-            loader,
-            total=len(loader),
-            desc=tqdm_desc,
-            disable=not sys.stderr.isatty(),
-        )
-        for batch_idx, batch in enumerate(progress):
+        iterable = loader
+        pbar = None
+        if use_tty and n_batches > 0:
+            iterable = tqdm(
+                loader,
+                total=n_batches,
+                desc=tqdm_desc,
+                mininterval=0.5,
+                file=sys.stderr,
+            )
+            pbar = iterable
+        for batch_idx, batch in enumerate(iterable):
             use_cuda = device == "cuda"
             clip_tensor = batch["clip_tensor"]
             label_ids = batch["label_ids"]
@@ -408,7 +484,8 @@ def run_epoch(
             cls_loss_value = float(cls_loss.detach().cpu())
             displ_loss_value = float(displ_loss.detach().cpu())
             total_loss += loss_value
-            running_loss = total_loss / (batch_idx + 1)
+            steps_done = batch_idx + 1
+            running_loss = total_loss / steps_done
             if training:
                 backward_only = (batch_idx + 1) % acc_grad_iter != 0
                 if scaler is None:
@@ -424,30 +501,47 @@ def run_epoch(
                         scaler.update()
                         optimizer.zero_grad()
                         scheduler.step()
+            lr_now = optimizer.param_groups[0]["lr"] if optimizer is not None else None
             if writer is not None:
-                global_step = (epoch_index or 0) * len(loader) + batch_idx
+                global_step = (epoch_index or 0) * n_batches + batch_idx
                 writer.add_scalar(f"loss_step/{phase}", loss_value, global_step)
                 writer.add_scalar(f"loss_step/{phase}_running", running_loss, global_step)
                 writer.add_scalar(f"loss_step/{phase}_cls", cls_loss_value, global_step)
-                writer.add_scalar(f"loss_step/{phase}_displacement", displ_loss_value, global_step)
-            if (batch_idx + 1) % log_every_steps == 0 or (batch_idx + 1) == len(loader):
-                lr = optimizer.param_groups[0]["lr"] if optimizer is not None else None
-                steps_done = batch_idx + 1
-                elapsed = time.perf_counter() - epoch_start
-                avg_step_s = elapsed / steps_done
-                epoch_eta_s = avg_step_s * (len(loader) - steps_done)
+                writer.add_scalar(
+                    f"loss_step/{phase}_displacement", displ_loss_value, global_step
+                )
+                if training and lr_now is not None:
+                    writer.add_scalar("train/lr", lr_now, global_step)
+            elapsed = time.perf_counter() - epoch_start
+            avg_step_s = elapsed / steps_done
+            epoch_eta_s = avg_step_s * (n_batches - steps_done)
+            if pbar is not None:
+                postfix = {
+                    "loss": f"{loss_value:.4f}",
+                    "run": f"{running_loss:.4f}",
+                    "cls": f"{cls_loss_value:.4f}",
+                    "disp": f"{displ_loss_value:.4f}",
+                    "t": f"{avg_step_s:.2f}s",
+                    "eta": _format_duration(epoch_eta_s),
+                }
+                if lr_now is not None:
+                    postfix["lr"] = f"{lr_now:.1e}"
+                pbar.set_postfix(postfix, refresh=False)
+            elif n_batches > 0 and (
+                steps_done % plain_log_every == 0 or steps_done == n_batches
+            ):
                 print(
                     _format_step_log(
                         phase=phase,
                         epoch_index=epoch_index,
                         nr_epochs=nr_epochs,
                         batch_idx=batch_idx,
-                        num_batches=len(loader),
+                        num_batches=n_batches,
                         loss=loss_value,
                         running_loss=running_loss,
                         cls_loss=cls_loss_value,
                         displ_loss=displ_loss_value,
-                        lr=lr,
+                        lr=lr_now,
                         avg_step_s=avg_step_s,
                         epoch_eta_s=epoch_eta_s,
                     ),

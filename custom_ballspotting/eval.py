@@ -3,18 +3,24 @@
 The ranking / AP integration in :func:`compute_map` matches dudek
 ``TDeedMAPEvaluator.compute_map`` (``map_mine``).
 
-For validation, :func:`val_map` **by default** builds the per-frame score matrix like
-dudek ``TeamTDeed2HeadsPrediction`` + ``compute_team_scores_matrix``, then applies
-the same soft-NMS as ``BASTeamTDeedEvaluator.eval`` before ``compute_map``.  This
-is **not** SoccerNet ``mAPevaluateTest`` (ZIP / ``average_mAP``); that protocol
-requires challenge-style predictions and label archives.
+:class:`ValMapMetrics` can also include SoccerNet ``mAPevaluateTest`` / ``average_mAP``
+(``challenge_mAP``) when ``soccernet_path`` and per-video ``soccernet_game_id`` are set,
+matching dudek ``BASTeamTDeedEvaluator.eval`` alongside ``map_mine``.
 """
+from __future__ import annotations
+
 import dataclasses
+import warnings
 
 import numpy as np
+import torch
 from torch.utils.data import DataLoader
 
-from custom_ballspotting.actions import NUM_TEAM_ACTION_CLASSES, label_to_index
+from custom_ballspotting.actions import (
+    NUM_TEAM_ACTION_CLASSES,
+    index_to_label,
+    label_to_index,
+)
 from custom_ballspotting.data import CustomTDeedDataset, VideoClip
 from custom_ballspotting.inference import score_video
 from custom_ballspotting.map_scoring import (
@@ -24,12 +30,53 @@ from custom_ballspotting.map_scoring import (
 
 
 @dataclasses.dataclass
+class ValMapMetrics:
+    """Validation metrics; ``challenge_mAP`` is SoccerNet test-style mAP when available."""
+
+    map_mine: float
+    challenge_mAP: float | None = None
+
+
+@dataclasses.dataclass
 class VideoScoredData:
     """Per-video scores and targets needed by :func:`compute_map`."""
 
     video_id: str
     scores: np.ndarray  # (num_frames, 2*N)  foreground only, no background col
     targets: np.ndarray  # (num_frames, 2*N)  binary, 1 at ground-truth event frames
+
+
+def scores_fg_to_challenge_results_json(
+    scores_fg: np.ndarray,
+    fps: float,
+    game_path: str,
+) -> dict:
+    """Dense per-frame predictions JSON (dudek ``_TeamBASScoredVideo.annotate`` style)."""
+    predictions: list[dict] = []
+    for i in range(scores_fg.shape[0]):
+        x = scores_fg[i]
+        confidence = float(np.max(x))
+        label_col = int(np.argmax(x))
+        mapped = index_to_label(label_col + 1)
+        if mapped is None:
+            continue
+        action, team = mapped
+        position = int(i / fps * 1000)
+        total_seconds = position // 1000
+        half = 1 if total_seconds < 45 * 60 else 2
+        seconds_in_half = total_seconds if half == 1 else total_seconds - 45 * 60
+        game_time = f"{half} - {seconds_in_half // 60:02d}:{seconds_in_half % 60:02d}"
+        predictions.append(
+            {
+                "gameTime": game_time,
+                "label": action.value,
+                "position": position,
+                "confidence": confidence,
+                "half": half,
+                "team": team.value,
+            }
+        )
+    return {"UrlLocal": game_path, "predictions": predictions}
 
 
 def compute_ap(recalls: np.ndarray, precisions: np.ndarray) -> float:
@@ -47,22 +94,7 @@ def compute_map(
     delta_frames: int,
     num_classes: int,
 ) -> float:
-    """Compute mAP@delta_frames over all foreground classes.
-
-    Parameters
-    ----------
-    video_data:
-        One entry per validation video with pre-computed scores and targets.
-    delta_frames:
-        Symmetric frame-count tolerance for a prediction to count as a TP.
-    num_classes:
-        Number of foreground classes (``NUM_TEAM_ACTION_CLASSES`` = 2 * N).
-
-    Returns
-    -------
-    float
-        Mean Average Precision in [0, 1].
-    """
+    """Compute mAP@delta_frames over all foreground classes."""
     APs: list[float] = []
 
     for class_idx in range(num_classes):
@@ -147,52 +179,17 @@ def val_map(
     use_snms: bool = True,
     snms_class_window: int | list[int] = 12,
     snms_threshold: float = 0.01,
-) -> float:
-    """Score all validation clips and compute mAP@delta_frames.
+    soccernet_path: str | None = None,
+    run_soccernet_challenge_map: bool = False,
+    soccernet_challenge_metric: str = "at1",
+) -> ValMapMetrics:
+    """Score all validation clips and compute ``map_mine``; optionally SoccerNet challenge mAP.
 
-    Clips are grouped by source video.  For each video:
-
-    * **Default (dudek-aligned):** scores are built like dudek
-      ``TeamTDeed2HeadsPrediction`` + ``compute_team_scores_matrix`` (softmax,
-      displacement shift, linear alignment into the video span, mean over
-      overlaps), then optional ``soft_non_maximum_suppression`` with the same
-      defaults as ``BASTeamTDeedEvaluator.eval`` before :func:`compute_map`.
-    * **Legacy:** dense per-frame softmax via :func:`~custom_ballspotting.inference.score_video`
-      (no displacement alignment, no soft-NMS).
-
-    * A binary targets matrix is built from the video's ground-truth annotations,
-      mapped to frame indices via the video's metadata FPS.
-
-    Parameters
-    ----------
-    model:
-        ``CustomTDeedModule`` already on ``device``, in eval mode.
-    val_clips:
-        Validation clips produced by :func:`~custom_ballspotting.training.split_by_video`.
-        Because ``split_by_video`` splits at the video level, every clip of a
-        given video lands in the same split, so the targets matrix is complete.
-    device:
-        ``"cuda"`` or ``"cpu"``.
-    val_batch_size:
-        Clips per forward pass.
-    delta_frames:
-        Frame-count tolerance for TP matching.
-    dudek_style_scoring:
-        If ``True`` (default), match dudek ``map_mine`` score construction.
-    use_snms:
-        If ``True`` and ``dudek_style_scoring`` is ``True``, apply soft-NMS on
-        foreground score columns (dudek default in ``eval``).
-    snms_class_window:
-        Per-class temporal window (int = same for all columns), or list of length ``2N``.
-    snms_threshold:
-        Soft-NMS minimum peak score (dudek default ``0.01``).
-
-    Returns
-    -------
-    float
-        mAP@delta_frames in [0, 1].
+    When ``run_soccernet_challenge_map`` is True and ``soccernet_path`` points at the
+    SoccerNet dataset (or labels zip), each :class:`~custom_ballspotting.data.VideoRecord`
+    must have ``soccernet_game_id`` set (JSON ``soccernet_game_id`` / ``UrlLocal``, or
+    inferred from the first three ``video_id`` path segments).
     """
-    # Group clips by source video
     by_video: dict[str, tuple] = {}
     for clip in val_clips:
         vid_id = clip.source_video.video_id or clip.source_video.video_path
@@ -201,6 +198,8 @@ def val_map(
         by_video[vid_id][1].append(clip)
 
     video_data: list[VideoScoredData] = []
+    challenge_merged: dict[str, dict] = {}
+    challenge_missing: list[str] = []
     model.eval()
     with torch.no_grad():
         for vid_id, (video_record, clips) in by_video.items():
@@ -220,12 +219,10 @@ def val_map(
                     num_classes_with_background=NUM_TEAM_ACTION_CLASSES + 1,
                 )
             else:
-                # Legacy: averaged softmax only (no displacement alignment / SNMS).
                 full_scores = score_video(model, clips, loader, device=device)
             num_frames = full_scores.shape[0]
 
-            # Drop background column; keep foreground cols 1..2N
-            scores_fg = full_scores[:, 1:]  # (num_frames, 2*N)
+            scores_fg = full_scores[:, 1:]
             if dudek_style_scoring and use_snms:
                 scores_fg = soft_non_maximum_suppression(
                     scores_fg,
@@ -233,13 +230,11 @@ def val_map(
                     threshold=snms_threshold,
                 )
 
-            # Build binary targets from annotations
-            fps = video_record.metadata_fps
+            fps = float(video_record.metadata_fps)
             targets = np.zeros((num_frames, NUM_TEAM_ACTION_CLASSES), dtype=np.float32)
             for ann in video_record.annotations:
                 frame = ann.frame_nr(fps)
                 if frame < num_frames:
-                    # label_to_index returns 1-based; subtract 1 for 0-based fg index
                     class_idx = label_to_index(ann.label, ann.team) - 1
                     targets[frame, class_idx] = 1.0
 
@@ -247,4 +242,56 @@ def val_map(
                 VideoScoredData(video_id=vid_id, scores=scores_fg, targets=targets)
             )
 
-    return compute_map(video_data, delta_frames, NUM_TEAM_ACTION_CLASSES)
+            if run_soccernet_challenge_map and soccernet_path:
+                gid = video_record.soccernet_game_id
+                if not gid:
+                    challenge_missing.append(vid_id)
+                    continue
+                payload = scores_fg_to_challenge_results_json(scores_fg, fps, gid)
+                if gid not in challenge_merged:
+                    challenge_merged[gid] = payload
+                else:
+                    challenge_merged[gid]["predictions"].extend(payload["predictions"])
+
+    map_mine = compute_map(video_data, delta_frames, NUM_TEAM_ACTION_CLASSES)
+
+    challenge_mAP: float | None = None
+    if run_soccernet_challenge_map:
+        if not soccernet_path:
+            warnings.warn(
+                "run_soccernet_challenge_map is True but soccernet_path is empty; "
+                "skipping SoccerNet challenge mAP.",
+                stacklevel=2,
+            )
+        elif challenge_missing:
+            warnings.warn(
+                "Skipping SoccerNet challenge mAP: missing soccernet_game_id "
+                f"for video_ids: {challenge_missing[:8]}"
+                f"{'...' if len(challenge_missing) > 8 else ''}",
+                stacklevel=2,
+            )
+        elif not challenge_merged:
+            warnings.warn(
+                "Skipping SoccerNet challenge mAP: no prediction payloads were built.",
+                stacklevel=2,
+            )
+        else:
+            try:
+                from custom_ballspotting.soccernet_challenge_eval import (
+                    run_mapevaluate_test_with_zip,
+                )
+
+                games = sorted(challenge_merged.keys())
+                results = run_mapevaluate_test_with_zip(
+                    games=games,
+                    soccernet_path=soccernet_path,
+                    game_results_json=dict(challenge_merged),
+                    metric=soccernet_challenge_metric,
+                )
+                challenge_mAP = float(results["mAP"])
+            except ImportError as e:
+                warnings.warn(f"SoccerNet challenge mAP unavailable: {e}", stacklevel=2)
+            except Exception as e:  # noqa: BLE001
+                warnings.warn(f"SoccerNet challenge mAP failed: {e}", stacklevel=2)
+
+    return ValMapMetrics(map_mine=map_mine, challenge_mAP=challenge_mAP)

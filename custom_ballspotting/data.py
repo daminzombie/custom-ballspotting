@@ -51,6 +51,10 @@ class VideoRecord:
     video_path: str
     annotations: list[Annotation]
     video_id: str | None = None
+    #: Path fragment ``league/season/match`` for SoccerNet ``mAPevaluateTest`` (ground-truth ZIP).
+    #: Set via ``ground_truth.json`` / ``Labels-ball.json`` keys ``soccernet_game_id`` or ``UrlLocal``,
+    #: or inferred as the first three segments of ``video_id`` when applicable.
+    soccernet_game_id: str | None = None
 
     @cached_property
     def metadata_fps(self) -> float:
@@ -330,17 +334,28 @@ def find_first_mp4(directory: str | Path) -> str | None:
     return str(mp4s[0].resolve()) if mp4s else None
 
 
+def infer_soccernet_game_id_from_video_id(video_id: str | None) -> str | None:
+    if not video_id:
+        return None
+    parts = [p for p in str(video_id).replace("\\", "/").split("/") if p]
+    if len(parts) >= 3:
+        return "/".join(parts[:3])
+    return None
+
+
 def annotations_from_ground_truth_payload(
     raw: dict,
     *,
     skip_unknown_labels: bool = True,
     unknown_labels_acc: set[str] | None = None,
+    random_team_when_na: bool = True,
 ) -> list[Annotation]:
     """Parse SoccerNet-style `ground_truth.json` annotations.
 
     Each annotation may optionally carry a ``"team"`` field (``"left"`` or
-    ``"right"``).  When absent or unrecognised the annotation defaults to
-    ``Team.LEFT`` so that legacy datasets without team labels remain usable.
+    ``"right"``).  When absent the annotation defaults to ``Team.LEFT``.
+    When ``random_team_when_na`` is True, ``"not applicable"`` is resolved to
+    left or right at random (same idea as dudek ``random_team_when_no_team``).
     """
     out: list[Annotation] = []
     for item in raw.get("annotations", []):
@@ -359,6 +374,8 @@ def annotations_from_ground_truth_payload(
             team = Team(team_raw) if team_raw is not None else Team.LEFT
         except ValueError:
             team = Team.LEFT
+        if random_team_when_na and team == Team.NOT_APPLICABLE:
+            team = Team.RIGHT if random.random() > 0.5 else Team.LEFT
         out.append(Annotation(label=action, position=pos, team=team))
     return out
 
@@ -368,6 +385,7 @@ def video_record_from_clip_dir(
     dataset_root: Path,
     *,
     unknown_labels_acc: set[str] | None = None,
+    random_team_when_na: bool = True,
 ) -> VideoRecord | None:
     """One clip directory: first `*.mp4` + labels JSON."""
     mp4 = find_first_mp4(clip_dir)
@@ -381,17 +399,31 @@ def video_record_from_clip_dir(
     with open(labels_path, "r") as f:
         raw = json.load(f)
     annotations = annotations_from_ground_truth_payload(
-        raw, unknown_labels_acc=unknown_labels_acc
+        raw,
+        unknown_labels_acc=unknown_labels_acc,
+        random_team_when_na=random_team_when_na,
     )
     try:
         rel = clip_dir.relative_to(dataset_root)
     except ValueError:
         rel = clip_dir.resolve()
     video_id = str(rel).replace(os.sep, "/")
-    return VideoRecord(video_path=mp4, annotations=annotations, video_id=video_id)
+    game = raw.get("soccernet_game_id") or raw.get("UrlLocal")
+    if not game:
+        game = infer_soccernet_game_id_from_video_id(video_id)
+    return VideoRecord(
+        video_path=mp4,
+        annotations=annotations,
+        video_id=video_id,
+        soccernet_game_id=game,
+    )
 
 
-def load_dataset_records(dataset_root: str) -> list[VideoRecord]:
+def load_dataset_records(
+    dataset_root: str,
+    *,
+    random_team_when_na: bool = True,
+) -> list[VideoRecord]:
     """
     Load clips under dataset_root (recursive): each folder that contains
     ``ground_truth.json`` or dudek/SoccerNet ``Labels-ball.json`` uses the
@@ -407,7 +439,12 @@ def load_dataset_records(dataset_root: str) -> list[VideoRecord]:
     unknown_labels: set[str] = set()
     records: list[VideoRecord] = []
     for clip_dir in clip_dirs:
-        rec = video_record_from_clip_dir(clip_dir, root, unknown_labels_acc=unknown_labels)
+        rec = video_record_from_clip_dir(
+            clip_dir,
+            root,
+            unknown_labels_acc=unknown_labels,
+            random_team_when_na=random_team_when_na,
+        )
         if rec is not None:
             records.append(rec)
     if unknown_labels:

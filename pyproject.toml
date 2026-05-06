@@ -36,6 +36,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+challenge = ["soccernet>=0.1.61"]
 dev = [
     "ruff>=0.4.0",
     "pytest>=8.0.0",

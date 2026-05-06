@@ -1,0 +1,16 @@
+{
+  "dataset_root": "../data/custom/dataset",
+  "pretrained_checkpoint_path": "../checkpoints/tdeed_challenge.pt",
+  "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
+  "experiment_name": "custom_posttrain_challenge_eval",
+  "soccernet_path": "../.data/SoccerNetGS",
+  "val_run_soccernet_challenge_map": true,
+  "clip_frames_count": 80,
+  "overlap": 60,
+  "sgp_ks": 5,
+  "learning_rate": 0.0006,
+  "train_batch_size": 8,
+  "val_batch_size": 8,
+  "acc_grad_iter": 1,
+  "train_split": 0.92
+}
