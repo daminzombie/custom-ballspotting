@@ -228,6 +228,7 @@ class TDeedClip:
         crop_proba: float = 0.0,
         crop_size: float = 0.9,
         device: str | None = None,
+        image_executor: ThreadPoolExecutor | None = None,
     ):
         num_frames = len(clip.frames)
         label_ids = torch.zeros(num_frames, dtype=torch.long)
@@ -252,8 +253,12 @@ class TDeedClip:
             img = torchvision.io.read_image(path)
             return hflip(img) if flip else img
 
-        with ThreadPoolExecutor() as executor:
-            imgs = list(executor.map(load_image, [frame.frame_path for frame in clip.frames]))
+        frame_paths = [frame.frame_path for frame in clip.frames]
+        if image_executor is None:
+            with ThreadPoolExecutor() as executor:
+                imgs = list(executor.map(load_image, frame_paths))
+        else:
+            imgs = list(image_executor.map(load_image, frame_paths))
         clip_tensor = torch.stack(imgs, dim=0)
         if device is not None:
             clip_tensor = clip_tensor.to(device)
@@ -295,10 +300,16 @@ class CustomTDeedDataset(Dataset):
         self.even_choice_proba = even_choice_proba
         self.enforced_epoch_size = enforced_epoch_size
         self.device = device
+        self._image_executor = ThreadPoolExecutor()
         self.clip_ids_by_label: dict[Action, list[int]] = {action: [] for action in Action}
         for idx, clip in enumerate(self.clips):
             for annotation in clip.unique_annotations:
                 self.clip_ids_by_label[annotation.label].append(idx)
+
+    def __del__(self):
+        executor = getattr(self, "_image_executor", None)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     def __len__(self):
         return self.enforced_epoch_size or len(self.clips)
@@ -317,6 +328,7 @@ class CustomTDeedDataset(Dataset):
             camera_move_proba=self.camera_move_proba,
             crop_proba=self.crop_proba,
             device=self.device,
+            image_executor=self._image_executor,
         )
         return {
             "clip_tensor": item.clip_tensor,
