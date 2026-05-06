@@ -6,7 +6,7 @@
 background + N×LEFT actions + N×RIGHT actions   →   2*N + 1 classes
 ```
 
-For the current action set, `N = 19`, so the classifier has `39` classes.
+For the current **main** branch action set, `N = 19`, so the classifier has `39` classes. The **`dudek`** branch uses the SoccerNet BAS vocabulary (12 actions, `2*12+1` classes) aligned with DUDEK’s `BASLabel`; check out that branch for dudek-matching label strings and SoccerNet tooling without editing `actions.py`.
 
 ## Package Design
 
@@ -64,24 +64,31 @@ On this Windows workspace, if you are reusing the DUDEK venv, call:
 ../dude.k/.venv/Scripts/custom-ballspotting.exe --help
 ```
 
-## Action Classes
+## Custom actions (main branch)
 
-The action vocabulary is defined in `custom_ballspotting/actions.py` and matches dudek's `BASLabel` order/values:
+The action vocabulary is defined in `custom_ballspotting/actions.py` (broader than SoccerNet BAS). `Team` also includes **`"not applicable"`**; when **`random_team_when_na`** is enabled (default in **`TrainConfig`**), those annotations are assigned left/right at random for training, like dudek’s `random_team_when_no_team`.
 
 ```python
 class Action(str, Enum):
-    PASS = "PASS"
-    DRIVE = "DRIVE"
-    HEADER = "HEADER"
-    HIGH_PASS = "HIGH PASS"
-    OUT = "OUT"
-    CROSS = "CROSS"
-    THROW_IN = "THROW IN"
-    SHOT = "SHOT"
-    BALL_PLAYER_BLOCK = "BALL PLAYER BLOCK"
-    PLAYER_SUCCESSFUL_TACKLE = "PLAYER SUCCESSFUL TACKLE"
-    FREE_KICK = "FREE KICK"
-    GOAL = "GOAL"
+    PASS = "pass"
+    PASS_RECEIVED = "pass_received"
+    FREE_KICK = "free_kick"
+    GOAL_KICK = "goal_kick"
+    CORNER = "corner"
+    THROW_IN = "throw_in"
+    RECOVERY = "recovery"
+    TACKLE = "tackle"
+    INTERCEPTION = "interception"
+    BALL_OUT_OF_PLAY = "ball_out_of_play"
+    CLEARANCE = "clearance"
+    TAKE_ON = "take_on"
+    SUBSTITUTION = "substitution"
+    BLOCK = "block"
+    AERIAL_DUEL = "aerial_duel"
+    SHOT = "shot"
+    SAVE = "save"
+    FOUL = "foul"
+    GOAL = "goal"
 ```
 
 Each class also has an `ActionConfig`:
@@ -90,13 +97,13 @@ Each class also has an `ActionConfig`:
 ActionConfig(weight, min_score, tolerance_seconds)
 ```
 
-Those values are used for training class weights and inference filtering/NMS.
+Those values are used for training class weights and inference filtering/NMS. For rare but important classes (`goal`, `foul`, `save`, …), higher class weights help when the dataset is small.
 
 ## Dataset layout
 
 Training uses clip folders under **`dataset_root`**. Set **`dataset_root`** in your JSON config files (`configs/*.json`); paths are resolved relative to the config file.
 
-The loader walks **`dataset_root`** recursively for **`ground_truth.json`** or SoccerNet/dudek **`Labels-ball.json`**. Each folder that contains labels uses the lexicographically first **`*.mp4`** as the video.
+The loader walks **`dataset_root`** recursively for **`ground_truth.json`** or SoccerNet/dudek **`Labels-ball.json`**. Each folder that contains labels uses the lexicographically first **`*.mp4`** as the video. **`label`** strings in those files must match **`Action.value`** on this branch (e.g. **`pass`**, **`shot`**). Raw BAS strings such as **`"PASS"`** / **`"HIGH PASS"`** match the **`dudek`** branch’s `actions.py`, not **main**.
 
 ### `ground_truth.json` format
 
@@ -104,9 +111,9 @@ Files must contain an **`annotations`** array. Each element is one event:
 
 | Field | Type | Meaning |
 |---|---|---|
-| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`PASS`**, **`FREE KICK`**, **`SHOT`**). |
+| **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`pass`**, **`free_kick`**, **`shot`**). |
 | **`position`** | integer | Time of the event in **milliseconds** from the start of that video file. |
-| **`team`** | string | **`"left"`** or **`"right"`**. Optional — defaults to **`"left"`** when absent or unrecognised, so legacy datasets without team labels still load. |
+| **`team`** | string | **`"left"`**, **`"right"`**, or **`"not applicable"`**. Optional — defaults to **`"left"`** when absent or unrecognised. With default **`random_team_when_na`**, **`"not applicable"`** is mapped to left or right at random. |
 
 Unknown **`label`** values are **skipped** (with one summary warning naming the unknown types).
 
@@ -115,8 +122,8 @@ Example:
 ```json
 {
   "annotations": [
-    { "label": "PASS", "position": 14240,  "team": "left" },
-    { "label": "SHOT", "position": 250400, "team": "right" }
+    { "label": "pass", "position": 14240,  "team": "left" },
+    { "label": "shot", "position": 250400, "team": "right" }
   ]
 }
 ```
@@ -421,7 +428,7 @@ Output format:
   "fps": 25.0,
   "predictions": [
     {
-      "label": "PASS",
+      "label": "pass",
       "team": "left",
       "position": 14240,
       "gameTime": "1 - 00:14",
