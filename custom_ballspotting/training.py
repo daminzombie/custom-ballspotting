@@ -50,6 +50,11 @@ class TrainConfig:
     eval_metric: str = "map"  # "map" or "loss"; "map" requires run_validation=True
     map_delta_frames: int = 5  # frame-count tolerance for mAP TP matching
     map_start_epoch: int = 3  # skip mAP eval for early epochs; fall back to val_loss before this
+    # Validation mAP: match dudek ``map_mine`` score pipeline (default) vs legacy ``score_video`` only.
+    val_map_dudek_style_scoring: bool = True
+    val_map_use_snms: bool = True
+    val_map_snms_class_window: int = 12
+    val_map_snms_threshold: float = 0.01
     enforce_train_epoch_size: int | None = None
     enforce_val_epoch_size: int | None = None
     log_every_steps: int = 1
@@ -235,6 +240,10 @@ def train_model(
                     device=config.device,
                     val_batch_size=config.val_batch_size,
                     delta_frames=config.map_delta_frames,
+                    dudek_style_scoring=config.val_map_dudek_style_scoring,
+                    use_snms=config.val_map_use_snms,
+                    snms_class_window=config.val_map_snms_class_window,
+                    snms_threshold=config.val_map_snms_threshold,
                 )
                 model.train()
                 writer.add_scalar("val/map", epoch_map, epoch)

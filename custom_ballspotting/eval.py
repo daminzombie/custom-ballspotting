@@ -1,22 +1,26 @@
 """mAP evaluation for team ball action spotting.
 
-Algorithm is ported directly from dudek ``ml/model/tdeed/eval/base.py``:
-  - Per video: softmax scores matrix  (frames × 2N)  vs binary targets matrix (frames × 2N).
-  - All-classes mAP@delta_frames: match predictions to ground-truth events within
-    a symmetric frame-count tolerance, then compute precision/recall → AP per class → mean.
+The ranking / AP integration in :func:`compute_map` matches dudek
+``TDeedMAPEvaluator.compute_map`` (``map_mine``).
 
-The public entry-point for training is :func:`val_map`.
+For validation, :func:`val_map` **by default** builds the per-frame score matrix like
+dudek ``TeamTDeed2HeadsPrediction`` + ``compute_team_scores_matrix``, then applies
+the same soft-NMS as ``BASTeamTDeedEvaluator.eval`` before ``compute_map``.  This
+is **not** SoccerNet ``mAPevaluateTest`` (ZIP / ``average_mAP``); that protocol
+requires challenge-style predictions and label archives.
 """
-
 import dataclasses
 
 import numpy as np
-import torch
 from torch.utils.data import DataLoader
 
 from custom_ballspotting.actions import NUM_TEAM_ACTION_CLASSES, label_to_index
 from custom_ballspotting.data import CustomTDeedDataset, VideoClip
 from custom_ballspotting.inference import score_video
+from custom_ballspotting.map_scoring import (
+    dudek_style_scores_matrix,
+    soft_non_maximum_suppression,
+)
 
 
 @dataclasses.dataclass
@@ -138,13 +142,24 @@ def val_map(
     device: str,
     val_batch_size: int = 1,
     delta_frames: int = 5,
+    *,
+    dudek_style_scoring: bool = True,
+    use_snms: bool = True,
+    snms_class_window: int | list[int] = 12,
+    snms_threshold: float = 0.01,
 ) -> float:
     """Score all validation clips and compute mAP@delta_frames.
 
     Clips are grouped by source video.  For each video:
 
-    * The model scores every val clip, producing a dense per-frame softmax
-      matrix (same logic as :func:`~custom_ballspotting.inference.score_video`).
+    * **Default (dudek-aligned):** scores are built like dudek
+      ``TeamTDeed2HeadsPrediction`` + ``compute_team_scores_matrix`` (softmax,
+      displacement shift, linear alignment into the video span, mean over
+      overlaps), then optional ``soft_non_maximum_suppression`` with the same
+      defaults as ``BASTeamTDeedEvaluator.eval`` before :func:`compute_map`.
+    * **Legacy:** dense per-frame softmax via :func:`~custom_ballspotting.inference.score_video`
+      (no displacement alignment, no soft-NMS).
+
     * A binary targets matrix is built from the video's ground-truth annotations,
       mapped to frame indices via the video's metadata FPS.
 
@@ -162,6 +177,15 @@ def val_map(
         Clips per forward pass.
     delta_frames:
         Frame-count tolerance for TP matching.
+    dudek_style_scoring:
+        If ``True`` (default), match dudek ``map_mine`` score construction.
+    use_snms:
+        If ``True`` and ``dudek_style_scoring`` is ``True``, apply soft-NMS on
+        foreground score columns (dudek default in ``eval``).
+    snms_class_window:
+        Per-class temporal window (int = same for all columns), or list of length ``2N``.
+    snms_threshold:
+        Soft-NMS minimum peak score (dudek default ``0.01``).
 
     Returns
     -------
@@ -187,12 +211,27 @@ def val_map(
                 shuffle=False,
                 pin_memory=device == "cuda",
             )
-            # full_scores: (max_frame_nr + 1, 2*N+1) — includes background col 0
-            full_scores = score_video(model, clips, loader, device=device)
+            if dudek_style_scoring:
+                full_scores = dudek_style_scores_matrix(
+                    model,
+                    clips,
+                    loader,
+                    device,
+                    num_classes_with_background=NUM_TEAM_ACTION_CLASSES + 1,
+                )
+            else:
+                # Legacy: averaged softmax only (no displacement alignment / SNMS).
+                full_scores = score_video(model, clips, loader, device=device)
             num_frames = full_scores.shape[0]
 
             # Drop background column; keep foreground cols 1..2N
             scores_fg = full_scores[:, 1:]  # (num_frames, 2*N)
+            if dudek_style_scoring and use_snms:
+                scores_fg = soft_non_maximum_suppression(
+                    scores_fg,
+                    class_window=snms_class_window,
+                    threshold=snms_threshold,
+                )
 
             # Build binary targets from annotations
             fps = video_record.metadata_fps
