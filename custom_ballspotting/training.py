@@ -72,8 +72,15 @@ class TrainConfig:
     # With a TTY, a tqdm bar is used instead. Effective plain interval is at least this
     # and at least max(1, min(256, batches // 50)).
     log_every_steps: int = 1
+    # Print detailed timing for the first N train batches. This synchronizes CUDA
+    # around timed sections, so keep it off except when diagnosing throughput.
+    train_profile_steps: int = 0
     random_seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+
+
+def _device_type(device: str) -> str:
+    return torch.device(device).type
 
 
 def train_model(
@@ -84,6 +91,7 @@ def train_model(
     config: TrainConfig | None = None,
 ) -> CustomTDeedModule:
     config = config or TrainConfig()
+    device_type = _device_type(config.device)
     save_as = render_checkpoint_path(save_as, experiment_name=experiment_name)
     if config.run_validation:
         train_clips, val_clips = split_by_video(clips, config.train_split, config.random_seed)
@@ -98,14 +106,15 @@ def train_model(
         crop_proba=config.crop_proba,
         even_choice_proba=config.even_choice_proba,
         enforced_epoch_size=config.enforce_train_epoch_size,
-        device=config.device if config.device == "cuda" else None,
+        device=config.device if device_type == "cuda" else None,
+        profile_items=min(config.train_profile_steps * config.train_batch_size, 16),
     )
     val_dataset = (
         CustomTDeedDataset(
             val_clips,
             displacement_radius=config.displacement_radius,
             enforced_epoch_size=config.enforce_val_epoch_size,
-            device=config.device if config.device == "cuda" else None,
+            device=config.device if device_type == "cuda" else None,
         )
         if config.run_validation and val_clips
         else None
@@ -126,8 +135,8 @@ def train_model(
     model.to(config.device)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
-    scaler = torch.amp.GradScaler("cuda") if config.device == "cuda" else None
-    use_cuda = config.device == "cuda"
+    scaler = torch.amp.GradScaler("cuda") if device_type == "cuda" else None
+    use_cuda = device_type == "cuda"
     # When using CUDA, datasets already return CUDA tensors to match dudek's
     # train-challenge input path. Pinned memory only applies to CPU tensors.
     pin_memory = use_cuda and train_dataset.device is None
@@ -222,6 +231,7 @@ def train_model(
                 phase="train",
                 writer=writer,
                 log_every_steps=config.log_every_steps,
+                profile_steps=config.train_profile_steps,
             )
             train_wall_s = time.perf_counter() - train_wall_start
             val_wall_s = 0.0
@@ -428,8 +438,10 @@ def run_epoch(
     phase: str = "train",
     writer: SummaryWriter | None = None,
     log_every_steps: int = 1,
+    profile_steps: int = 0,
 ):
     training = optimizer is not None
+    device_type = _device_type(device)
     model.train(training)
     total_loss = 0.0
     log_every_steps = max(1, log_every_steps)
@@ -459,33 +471,48 @@ def run_epoch(
                 file=sys.stderr,
             )
             pbar = iterable
+        prev_step_end = time.perf_counter()
         for batch_idx, batch in enumerate(iterable):
-            use_cuda = device == "cuda"
+            batch_ready_t = time.perf_counter()
+            use_cuda = device_type == "cuda"
+            profile_this_step = training and batch_idx < profile_steps
+
+            def _sync_if_profile() -> None:
+                if profile_this_step and use_cuda:
+                    torch.cuda.synchronize(device)
+
             clip_tensor = batch["clip_tensor"]
             label_ids = batch["label_ids"]
             displacement = batch["displacement"]
-            if clip_tensor.device.type != device:
+            move_start_t = time.perf_counter()
+            if clip_tensor.device.type != device_type:
                 clip_tensor = clip_tensor.to(device, non_blocking=use_cuda)
-            if label_ids.device.type != device:
+            if label_ids.device.type != device_type:
                 label_ids = label_ids.to(device, non_blocking=use_cuda)
-            if displacement.device.type != device:
+            if displacement.device.type != device_type:
                 displacement = displacement.to(device, non_blocking=use_cuda)
             clip_tensor = clip_tensor.float()
             label_ids = label_ids.long()
             displacement = displacement.float()
-            with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
+            _sync_if_profile()
+            forward_start_t = time.perf_counter()
+            with torch.amp.autocast(device_type=device_type, enabled=use_cuda):
                 outputs = model(clip_tensor, inference=not training)
                 logits = outputs["logits"].reshape(-1, NUM_TEAM_ACTION_CLASSES + 1)
                 labels = label_ids.reshape(-1)
                 cls_loss = F.cross_entropy(logits, labels, weight=class_weights)
                 displ_loss = F.mse_loss(outputs["displacement"], displacement)
                 loss = 1.5 * cls_loss + displ_loss
+            _sync_if_profile()
+            scalar_start_t = time.perf_counter()
             loss_value = float(loss.detach().cpu())
             cls_loss_value = float(cls_loss.detach().cpu())
             displ_loss_value = float(displ_loss.detach().cpu())
+            scalar_end_t = time.perf_counter()
             total_loss += loss_value
             steps_done = batch_idx + 1
             running_loss = total_loss / steps_done
+            backward_start_t = time.perf_counter()
             if training:
                 backward_only = (batch_idx + 1) % acc_grad_iter != 0
                 if scaler is None:
@@ -501,7 +528,10 @@ def run_epoch(
                         scaler.update()
                         optimizer.zero_grad()
                         scheduler.step()
+            _sync_if_profile()
+            backward_end_t = time.perf_counter()
             lr_now = optimizer.param_groups[0]["lr"] if optimizer is not None else None
+            log_start_t = time.perf_counter()
             if writer is not None:
                 global_step = (epoch_index or 0) * n_batches + batch_idx
                 writer.add_scalar(f"loss_step/{phase}", loss_value, global_step)
@@ -512,9 +542,42 @@ def run_epoch(
                 )
                 if training and lr_now is not None:
                     writer.add_scalar("train/lr", lr_now, global_step)
+            log_end_t = time.perf_counter()
             elapsed = time.perf_counter() - epoch_start
             avg_step_s = elapsed / steps_done
             epoch_eta_s = avg_step_s * (n_batches - steps_done)
+            if profile_this_step:
+                total_profile_s = log_end_t - batch_ready_t
+                data_wait_s = batch_ready_t - prev_step_end
+                data_profile = ""
+                profile_count = float(batch.get("profile_count", torch.tensor(0.0)).sum().item())
+                if profile_count:
+                    data_profile = (
+                        f" data_label_avg_s={float(batch['profile_label_s'].sum().item()) / profile_count:.4f}"
+                        f" data_read_avg_s={float(batch['profile_read_s'].sum().item()) / profile_count:.4f}"
+                        f" data_stack_avg_s={float(batch['profile_stack_s'].sum().item()) / profile_count:.4f}"
+                        f" data_move_avg_s={float(batch['profile_move_s'].sum().item()) / profile_count:.4f}"
+                        f" data_augment_avg_s={float(batch['profile_augment_s'].sum().item()) / profile_count:.4f}"
+                        f" data_total_avg_s={float(batch['profile_total_s'].sum().item()) / profile_count:.4f}"
+                        f" data_profile_items={profile_count:.0f}"
+                    )
+                print(
+                    "train profile "
+                    f"epoch={epoch_index + 1 if epoch_index is not None else '?'} "
+                    f"step={steps_done}/{n_batches} "
+                    f"shape={tuple(clip_tensor.shape)} "
+                    f"dtype={clip_tensor.dtype} "
+                    f"device={clip_tensor.device} "
+                    f"data_wait_s={data_wait_s:.4f} "
+                    f"move_s={forward_start_t - move_start_t:.4f} "
+                    f"forward_loss_s={scalar_start_t - forward_start_t:.4f} "
+                    f"scalar_sync_s={scalar_end_t - scalar_start_t:.4f} "
+                    f"backward_optim_s={backward_end_t - backward_start_t:.4f} "
+                    f"tb_log_s={log_end_t - log_start_t:.4f} "
+                    f"total_after_data_s={total_profile_s:.4f}"
+                    f"{data_profile}",
+                    flush=True,
+                )
             if pbar is not None:
                 postfix = {
                     "loss": f"{loss_value:.4f}",
@@ -547,6 +610,7 @@ def run_epoch(
                     ),
                     flush=True,
                 )
+            prev_step_end = time.perf_counter()
     return total_loss / max(1, len(loader))
 
 
