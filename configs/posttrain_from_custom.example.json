@@ -1,6 +1,6 @@
 {
   "dataset_root": "../.data/custom-bas/soccernet/score/turbo_result",
-  "pretrained_checkpoint_path": "../checkpoints/tdeed_challenge.pt",
+  "pretrained_checkpoint_path": "../checkpoints/checkpoint_best_002.pt",
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_posttrain_from_custom",
   "log_every_steps": 1,
