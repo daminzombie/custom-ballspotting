@@ -1,7 +1,7 @@
 {
   "dataset_root": "../data/custom/dataset",
   "pretrained_checkpoint_path": "../checkpoints/tdeed_challenge.pt",
-  "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
+  "save_as": "../checkpoints/{experiment_name}_{timestamp}",
   "experiment_name": "custom_posttrain_challenge_eval",
   "features_model_name": "regnety_002",
   "soccernet_path": "../.data/SoccerNetGS",

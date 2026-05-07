@@ -1,7 +1,7 @@
 {
   "dataset_root": "../data/custom/dataset",
   "pretrained_checkpoint_path": "../../T-DEED/checkpoints/SoccerNetBall/SoccerNetBall_challenge2/checkpoint_best.pt",
-  "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
+  "save_as": "../checkpoints/{experiment_name}_{timestamp}",
   "experiment_name": "custom_final_product_posttrain_720p",
   "features_model_name": "regnety_002",
   "nr_epochs": 30,

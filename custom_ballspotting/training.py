@@ -18,7 +18,11 @@ from custom_ballspotting.actions import (
     NUM_TEAM_ACTION_CLASSES,
     TRAINING_CE_RELATIVE_WEIGHTS,
 )
-from custom_ballspotting.checkpoints import render_checkpoint_path, write_checkpoint_metadata
+from custom_ballspotting.checkpoints import (
+    epoch_checkpoint_dirs,
+    render_checkpoint_path,
+    write_checkpoint_metadata,
+)
 from custom_ballspotting.data import (
     CustomTDeedDataset,
     VideoClip,
@@ -86,6 +90,8 @@ class TrainConfig:
     #: for every foreground class; background CE weight is always ``1.0``.
     #: E.g. ``5.0`` with pass relative ``1.0`` → pass gets CE weight ``5.0`` vs bg ``1.0``.
     ce_foreground_scale: float = 5.0
+    #: Save ``epochs/epoch_NNN.pt`` and ``metadata/epoch_NNN.metadata.json`` each epoch.
+    save_epoch_checkpoints: bool = True
 
 
 def _device_type(device: str) -> str:
@@ -363,12 +369,49 @@ def train_model(
             if remaining_epochs > 0:
                 summary_parts.append(f"train_eta={_format_duration(train_eta_s)}")
             if should_save:
-                summary_parts.append("★ checkpoint saved")
+                summary_parts.append("★ best checkpoint saved")
             summary_line = " ".join(summary_parts)
             print(summary_line, flush=True)
             ts = time.strftime("%Y-%m-%dT%H:%M:%SZ ", time.gmtime())
             epoch_summary_log_file.write(ts + summary_line + "\n")
             epoch_summary_log_file.flush()
+
+            if config.save_epoch_checkpoints:
+                epochs_dir, meta_dir = epoch_checkpoint_dirs(save_as)
+                os.makedirs(epochs_dir, exist_ok=True)
+                os.makedirs(meta_dir, exist_ok=True)
+                epoch_ckpt_name = f"epoch_{epochs_done:03d}.pt"
+                epoch_ckpt_path = os.path.join(epochs_dir, epoch_ckpt_name)
+                torch.save(model.state_dict(), epoch_ckpt_path)
+                epoch_metric_payload = {
+                    "checkpoint_kind": "epoch",
+                    "checkpoint_path": epoch_ckpt_path,
+                    "experiment_name": experiment_name,
+                    "epoch": epoch,
+                    "epoch_display": epochs_done,
+                    "is_new_best": should_save,
+                    "train_loss": train_loss,
+                    "val_loss": val_loss if val_loader is not None else None,
+                    "val_map_mine": epoch_map,
+                    "val_challenge_mAP": epoch_challenge_map,
+                    "best_checkpoint_path": save_as,
+                    "best_map_mine": best_map_metric,
+                    "best_challenge_mAP": best_challenge_mAP,
+                    "best_loss_metric": best_loss_metric,
+                    "pretrained_checkpoint_path": pretrained_checkpoint_path,
+                    "config": config.__dict__,
+                    "num_action_classes": NUM_ACTION_CLASSES,
+                    "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
+                    "num_train_clips": len(train_clips),
+                    "num_val_clips": len(val_clips),
+                    "run_validation": config.run_validation,
+                }
+                meta_file = os.path.join(meta_dir, f"epoch_{epochs_done:03d}.metadata.json")
+                write_checkpoint_metadata(
+                    epoch_ckpt_path,
+                    epoch_metric_payload,
+                    metadata_file=meta_file,
+                )
 
             if should_save:
                 os.makedirs(os.path.dirname(os.path.abspath(save_as)) or ".", exist_ok=True)
@@ -386,6 +429,7 @@ def train_model(
                     active_metric_name = "train_loss"
                     active_best = best_loss_metric
                 metric_payload = {
+                    "checkpoint_kind": "best",
                     "checkpoint_path": save_as,
                     "experiment_name": experiment_name,
                     "epoch": epoch,

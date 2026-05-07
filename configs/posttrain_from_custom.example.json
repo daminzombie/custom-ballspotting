@@ -1,7 +1,7 @@
 {
   "dataset_root": "../.data/custom-bas/soccernet/score/turbo_result",
   "pretrained_checkpoint_path": "../checkpoints/checkpoint_best_002.pt",
-  "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
+  "save_as": "../checkpoints/{experiment_name}_{timestamp}",
   "experiment_name": "custom_posttrain_from_custom",
   "log_every_steps": 1,
   "clip_frames_count": 100,

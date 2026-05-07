@@ -36,15 +36,45 @@ def render_checkpoint_path(
     return rendered
 
 
+def run_artifact_root(best_checkpoint_path: str) -> str:
+    """Root directory for per-epoch weights and run-scoped metadata.
+
+    If ``save_as`` is nested as ``…/<run_id>/<run_id>_best.pt``, epoch artifacts
+    live beside the best file under ``…/<run_id>/``. If the best file is flat
+    ``…/<stem>_best.pt``, use ``…/<stem>/`` so multiple runs do not share one
+    ``epochs/`` folder.
+    """
+    parent = os.path.dirname(os.path.abspath(best_checkpoint_path))
+    stem = Path(best_checkpoint_path).stem
+    parent_base = os.path.basename(parent.rstrip(os.sep))
+    if parent_base and stem.startswith(parent_base + "_"):
+        return parent
+    return os.path.join(parent, stem)
+
+
+def epoch_checkpoint_dirs(best_checkpoint_path: str) -> tuple[str, str]:
+    """Return ``(epochs_dir, metadata_dir)`` under :func:`run_artifact_root`."""
+    root = run_artifact_root(best_checkpoint_path)
+    return (
+        os.path.join(root, "epochs"),
+        os.path.join(root, "metadata"),
+    )
+
+
 def write_checkpoint_metadata(
     checkpoint_path: str,
     metadata: dict[str, Any],
+    *,
+    metadata_file: str | None = None,
 ) -> str:
-    metadata_path = f"{Path(checkpoint_path).with_suffix('')}.metadata.json"
-    os.makedirs(os.path.dirname(os.path.abspath(metadata_path)) or ".", exist_ok=True)
-    with open(metadata_path, "w") as f:
+    if metadata_file is None:
+        metadata_file = f"{Path(checkpoint_path).with_suffix('')}.metadata.json"
+    meta_parent = os.path.dirname(os.path.abspath(metadata_file))
+    if meta_parent:
+        os.makedirs(meta_parent, exist_ok=True)
+    with open(metadata_file, "w") as f:
         json.dump(metadata, f, indent=2, default=str)
-    return metadata_path
+    return metadata_file
 
 
 def metadata_path_for_checkpoint(checkpoint_path: str) -> str:
