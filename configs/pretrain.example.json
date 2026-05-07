@@ -2,5 +2,6 @@
   "dataset_root": "../data/custom/dataset",
   "save_as": "../checkpoints/{experiment_name}_{timestamp}_best.pt",
   "experiment_name": "custom_pretrain",
+  "features_model_name": "regnety_002",
   "train_split": 0.8
 }

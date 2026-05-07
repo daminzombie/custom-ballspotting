@@ -1,6 +1,7 @@
 {
   "video_path": "../.data/947a939af2894430be81f165ba07ff.mp4/720p.mp4",
   "model_checkpoint_path": "../checkpoints/custom_posttrain_from_custom_20260503_105124_best.pt",
+  "features_model_name": "regnety_002",
   "output_path": "../predictions/sample_predictions_720p.json",
   "overlap": 68,
   "frame_target_width": 796,

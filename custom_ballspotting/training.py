@@ -38,7 +38,7 @@ class TrainConfig:
     clip_frames_count: int = 100
     overlap: int = 88
     displacement_radius: int = 4
-    features_model_name: str = "regnety_008"
+    features_model_name: str = "regnety_002"
     temporal_shift_mode: str = "gsf"
     n_layers: int = 2
     sgp_ks: int = 9

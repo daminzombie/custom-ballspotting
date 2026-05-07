@@ -167,7 +167,7 @@ def resolve_infer_video_params(
         ),
         "features_model_name": str(
             _coerce_infer_param(
-                "features_model_name", features_model_name, train_cfg, "regnety_008"
+                "features_model_name", features_model_name, train_cfg, "regnety_002"
             )
         ),
         "temporal_shift_mode": str(

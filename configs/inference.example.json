@@ -1,6 +1,7 @@
 {
   "video_path": "../data/videos/sample.mp4",
   "model_checkpoint_path": "../checkpoints/custom_final_product_posttrain_720p_YYYYMMDD_HHMMSS_best.pt",
+  "features_model_name": "regnety_002",
   "output_path": "../predictions/sample_predictions.json",
   "val_batch_size": 2
 }

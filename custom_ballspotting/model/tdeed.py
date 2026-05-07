@@ -17,7 +17,7 @@ class CustomTDeedModule(nn.Module):
         n_layers: int = 2,
         sgp_ks: int = 9,
         sgp_k: int = 4,
-        features_model_name: str = "regnety_008",
+        features_model_name: str = "regnety_002",
         temporal_shift_mode: str = "gsf",
         gaussian_blur_ks: int = 5,
     ):

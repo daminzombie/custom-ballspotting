@@ -309,7 +309,7 @@ Important: the architecture settings must match the checkpoint backbone:
 
 ```json
 {
-  "features_model_name": "regnety_008",
+  "features_model_name": "regnety_002",
   "temporal_shift_mode": "gsf",
   "clip_frames_count": 100,
   "n_layers": 2,
@@ -317,6 +317,8 @@ Important: the architecture settings must match the checkpoint backbone:
   "sgp_k": 4
 }
 ```
+
+If your `pretrained_checkpoint_path` is a standard SoccerNetBall T-DEED release, check its training config: many use **`rny008` / `regnety_008`**. `load_backbone()` requires **`features_model_name` to match** that checkpoint (same RegNet width). Use **`regnety_002`** only with a `rny002`/`regnety_002` trained weight file, or pretrain from ImageNet via timm without a T-DEED init.
 
 The T-DEED checkpoint is loaded with `load_backbone()`, so only these parts are transferred:
 
