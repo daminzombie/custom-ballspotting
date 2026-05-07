@@ -61,6 +61,8 @@ class Action(str, Enum):
 
 
 class ActionConfig(NamedTuple):
+    #: Inference / post-processing scale (not used for training CE; see
+    #: :data:`TRAINING_CE_RELATIVE_WEIGHTS`).
     weight: float
     min_score: float
     tolerance_seconds: float
@@ -87,6 +89,36 @@ ACTION_CONFIGS: dict[Action, ActionConfig] = {
     Action.FOUL: ActionConfig(7.7, 0.5, 2.5),
     Action.GOAL: ActionConfig(10.9, 0.5, 3.0),
 }
+
+# Cross-entropy only: relative importance among actions (most frequent ≈ 1.0).
+# Final CE weight for each foreground class is ``ce_foreground_scale * value``;
+# background stays 1.0. Independent of :attr:`ActionConfig.weight`.
+TRAINING_CE_RELATIVE_WEIGHTS: dict[Action, float] = {
+    Action.PASS: 1.0,
+    Action.PASS_RECEIVED: 1.4,
+    Action.FREE_KICK: 1.41,
+    Action.GOAL_KICK: 1.42,
+    Action.CORNER: 1.43,
+    Action.THROW_IN: 1.44,
+    Action.RECOVERY: 1.5,
+    Action.TACKLE: 2.5,
+    Action.INTERCEPTION: 2.8,
+    Action.BALL_OUT_OF_PLAY: 2.9,
+    Action.CLEARANCE: 3.1,
+    Action.TAKE_ON: 3.2,
+    Action.SUBSTITUTION: 4.2,
+    Action.BLOCK: 4.2,
+    Action.AERIAL_DUEL: 4.3,
+    Action.SHOT: 4.7,
+    Action.SAVE: 7.3,
+    Action.FOUL: 7.7,
+    Action.GOAL: 10.9,
+}
+
+if len(TRAINING_CE_RELATIVE_WEIGHTS) != len(Action):
+    raise RuntimeError(
+        "TRAINING_CE_RELATIVE_WEIGHTS must define exactly one entry per Action enum member"
+    )
 
 ACTION_CLASS_INDEX: dict[str, int] = {
     action.value: idx for idx, action in enumerate(Action)

@@ -12,7 +12,12 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 
-from custom_ballspotting.actions import ACTION_CONFIGS, Action, NUM_ACTION_CLASSES, NUM_TEAM_ACTION_CLASSES
+from custom_ballspotting.actions import (
+    Action,
+    NUM_ACTION_CLASSES,
+    NUM_TEAM_ACTION_CLASSES,
+    TRAINING_CE_RELATIVE_WEIGHTS,
+)
 from custom_ballspotting.checkpoints import render_checkpoint_path, write_checkpoint_metadata
 from custom_ballspotting.data import (
     CustomTDeedDataset,
@@ -77,6 +82,10 @@ class TrainConfig:
     train_profile_steps: int = 0
     random_seed: int = 42
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
+    #: Multiplies :data:`~custom_ballspotting.actions.TRAINING_CE_RELATIVE_WEIGHTS`
+    #: for every foreground class; background CE weight is always ``1.0``.
+    #: E.g. ``5.0`` with pass relative ``1.0`` → pass gets CE weight ``5.0`` vs bg ``1.0``.
+    ce_foreground_scale: float = 5.0
 
 
 def _device_type(device: str) -> str:
@@ -173,11 +182,14 @@ def train_model(
 
     epoch_summary_path = os.path.join(run_log_dir, "epoch_summary.log")
 
-    # Weight vector has 2*N+1 entries: background=1.0, then LEFT-team weights,
-    # then RIGHT-team weights (same per-action weight for both teams).
-    per_action_weights = [ACTION_CONFIGS[action].weight for action in Action]
+    # CE weight vector: 2*N+1 entries — background=1.0, then LEFT actions, then RIGHT
+    # (same CE weight per action for both teams).
+    per_action_ce = [
+        config.ce_foreground_scale * TRAINING_CE_RELATIVE_WEIGHTS[action]
+        for action in Action
+    ]
     class_weights = torch.tensor(
-        [1.0] + per_action_weights + per_action_weights,
+        [1.0] + per_action_ce + per_action_ce,
         dtype=torch.float32,
         device=config.device,
     )
