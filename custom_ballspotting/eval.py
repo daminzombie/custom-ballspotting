@@ -18,6 +18,7 @@ from torch.utils.data import DataLoader
 
 from custom_ballspotting.actions import (
     NUM_TEAM_ACTION_CLASSES,
+    Team,
     index_to_label,
     label_to_index,
 )
@@ -233,6 +234,8 @@ def val_map(
             fps = float(video_record.metadata_fps)
             targets = np.zeros((num_frames, NUM_TEAM_ACTION_CLASSES), dtype=np.float32)
             for ann in video_record.annotations:
+                if ann.team == Team.NOT_APPLICABLE:
+                    continue
                 frame = ann.frame_nr(fps)
                 if frame < num_frames:
                     class_idx = label_to_index(ann.label, ann.team) - 1

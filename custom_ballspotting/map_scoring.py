@@ -15,6 +15,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from custom_ballspotting.data import VideoClip
+from custom_ballspotting.model.tdeed import team_action_probabilities
 
 
 def soft_non_maximum_suppression(
@@ -131,9 +132,9 @@ def dudek_style_scores_matrix(
             clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=True)
-                logits = outputs["logits"]
+                joint_probs, _, _ = team_action_probabilities(outputs)
                 displacements = outputs["displacement"]
-            probs = torch.softmax(logits, dim=-1).detach().cpu().numpy()
+            probs = joint_probs.detach().cpu().numpy()
             displ_np = displacements.detach().cpu().numpy()
 
             for b in range(probs.shape[0]):
