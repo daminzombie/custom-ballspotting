@@ -52,6 +52,10 @@ class TrainConfig:
     nr_epochs: int = 25
     warm_up_epochs: int = 1
     learning_rate: float = 0.0003
+    #: AdamW decoupled weight decay (L2 on weights). ``0`` matches pre-regression behavior.
+    weight_decay: float = 0.01
+    #: Dropout on linear prediction heads (action / team / displacement).
+    head_dropout: float = 0.5
     train_batch_size: int = 1
     val_batch_size: int = 1
     acc_grad_iter: int = 8
@@ -147,12 +151,17 @@ def train_model(
         features_model_name=config.features_model_name,
         temporal_shift_mode=config.temporal_shift_mode,
         gaussian_blur_ks=config.gaussian_blur_kernel_size,
+        head_dropout=config.head_dropout,
     )
     if pretrained_checkpoint_path:
         model.load_backbone(pretrained_checkpoint_path)
     model.to(config.device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
     scaler = torch.amp.GradScaler("cuda") if device_type == "cuda" else None
     use_cuda = device_type == "cuda"
     # When using CUDA, datasets already return CUDA tensors to match dudek's

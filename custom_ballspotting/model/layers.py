@@ -189,10 +189,10 @@ class LayerNorm(nn.Module):
 
 
 class FCLayers(nn.Module):
-    def __init__(self, feat_dim, num_classes):
+    def __init__(self, feat_dim, num_classes, dropout_p: float = 0.5):
         super().__init__()
         self._fc_out = nn.Linear(feat_dim, num_classes)
-        self.dropout = nn.Dropout()
+        self.dropout = nn.Dropout(p=dropout_p)
 
     def forward(self, x):
         batch_size, clip_len, _ = x.shape

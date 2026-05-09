@@ -20,6 +20,7 @@ class CustomTDeedModule(nn.Module):
         features_model_name: str = "regnety_002",
         temporal_shift_mode: str = "gsf",
         gaussian_blur_ks: int = 5,
+        head_dropout: float = 0.5,
     ):
         super().__init__()
         self.clip_len = clip_len
@@ -48,9 +49,9 @@ class CustomTDeedModule(nn.Module):
             k=sgp_k,
             concat=True,
         )
-        self._pred_action = FCLayers(feat_dim, num_actions + 1)
-        self._pred_team = FCLayers(feat_dim, num_actions * 2)
-        self._pred_displ = FCLayers(feat_dim, 1)
+        self._pred_action = FCLayers(feat_dim, num_actions + 1, dropout_p=head_dropout)
+        self._pred_team = FCLayers(feat_dim, num_actions * 2, dropout_p=head_dropout)
+        self._pred_displ = FCLayers(feat_dim, 1, dropout_p=head_dropout)
         self.augmentation = T.Compose(
             [
                 T.RandomApply([T.ColorJitter(hue=0.2)], p=0.25),

@@ -70,6 +70,8 @@ def _train_options(command):
     command = click.option("--nr_epochs", type=int, default=None)(command)
     command = click.option("--warm_up_epochs", type=int, default=None)(command)
     command = click.option("--learning_rate", type=float, default=None)(command)
+    command = click.option("--weight_decay", type=float, default=None)(command)
+    command = click.option("--head_dropout", type=float, default=None)(command)
     command = click.option("--train_batch_size", type=int, default=None)(command)
     command = click.option("--val_batch_size", type=int, default=None)(command)
     command = click.option("--acc_grad_iter", type=int, default=None)(command)
@@ -170,6 +172,7 @@ def _run_train_command(require_pretrained: bool, force_no_pretrained: bool, **kw
 @click.option("--sgp_ks", type=int, default=None)
 @click.option("--sgp_k", type=int, default=None)
 @click.option("--gaussian_blur_kernel_size", type=int, default=None)
+@click.option("--head_dropout", type=float, default=None)
 @click.option("--val_batch_size", type=int, default=None)
 @click.option("--inference_threshold", type=float, default=None)
 @click.option(

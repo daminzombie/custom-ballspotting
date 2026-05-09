@@ -99,6 +99,7 @@ def resolve_infer_video_params(
     sgp_ks: int | None = None,
     sgp_k: int | None = None,
     gaussian_blur_kernel_size: int | None = None,
+    head_dropout: float | None = None,
     val_batch_size: int | None = None,
     inference_threshold: float | None = None,
     decode_thresholds: dict[str, float] | None = None,
@@ -187,6 +188,9 @@ def resolve_infer_video_params(
                 "gaussian_blur_kernel_size", gaussian_blur_kernel_size, train_cfg, 5
             )
         ),
+        "head_dropout": float(
+            _coerce_infer_param("head_dropout", head_dropout, train_cfg, 0.5)
+        ),
         "val_batch_size": int(_coerce_infer_param("val_batch_size", val_batch_size, train_cfg, 1)),
         "inference_threshold": float(threshold_resolved),
         "decode_thresholds": {str(k): float(v) for k, v in thresholds_resolved.items()},
@@ -213,6 +217,7 @@ def infer_video(
     sgp_ks: int | None = None,
     sgp_k: int | None = None,
     gaussian_blur_kernel_size: int | None = None,
+    head_dropout: float | None = None,
     val_batch_size: int | None = None,
     inference_threshold: float | None = None,
     decode_thresholds: dict[str, float] | None = None,
@@ -268,6 +273,7 @@ def infer_video(
         sgp_ks=sgp_ks,
         sgp_k=sgp_k,
         gaussian_blur_kernel_size=gaussian_blur_kernel_size,
+        head_dropout=head_dropout,
         val_batch_size=val_batch_size,
         inference_threshold=inference_threshold,
         decode_thresholds=decode_thresholds,
@@ -315,6 +321,7 @@ def infer_video(
             features_model_name=p["features_model_name"],
             temporal_shift_mode=p["temporal_shift_mode"],
             gaussian_blur_ks=p["gaussian_blur_kernel_size"],
+            head_dropout=p["head_dropout"],
         )
         model.load_all(model_checkpoint_path)
         model.to(p["device"])
