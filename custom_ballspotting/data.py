@@ -16,7 +16,14 @@ from torch.utils.data import Dataset
 from torchvision.transforms.v2.functional import hflip
 from tqdm import tqdm
 
-from custom_ballspotting.actions import Action, Team, label_to_index, parse_team_string
+from custom_ballspotting.actions import (
+    Action,
+    TEAM_IGNORE_INDEX,
+    Team,
+    action_to_index,
+    parse_team_string,
+    team_to_index,
+)
 from custom_ballspotting.augmentations import (
     augment_with_camera_movement,
     crop_video,
@@ -216,7 +223,8 @@ class VideoClip:
 class TDeedClip:
     origin: VideoClip
     clip_tensor: torch.Tensor
-    label_ids: torch.Tensor
+    action_label_ids: torch.Tensor
+    team_label_ids: torch.Tensor
     displacement: torch.Tensor
     profile: dict[str, float] | None = None
 
@@ -236,7 +244,8 @@ class TDeedClip:
     ):
         item_start_t = time.perf_counter()
         num_frames = len(clip.frames)
-        label_ids = torch.zeros(num_frames, dtype=torch.long)
+        action_label_ids = torch.zeros(num_frames, dtype=torch.long)
+        team_label_ids = torch.full((num_frames,), TEAM_IGNORE_INDEX, dtype=torch.long)
         displacement = torch.zeros(num_frames, dtype=torch.float32)
 
         flip = random.random() < flip_proba
@@ -245,13 +254,16 @@ class TDeedClip:
             if frame.annotation is None:
                 continue
             team = frame.annotation.team.flip() if flip else frame.annotation.team
-            label_idx = label_to_index(frame.annotation.label, team)
+            action_idx = action_to_index(frame.annotation.label)
+            team_idx = team_to_index(team)
             valid_offsets = range(
                 max(-displacement_radius, -idx),
                 min(displacement_radius, num_frames - idx - 1) + 1,
             )
             for offset in valid_offsets:
-                label_ids[idx + offset] = label_idx
+                target_idx = idx + offset
+                action_label_ids[target_idx] = action_idx
+                team_label_ids[target_idx] = team_idx
                 displacement[idx + offset] = float(offset)
         label_done_t = time.perf_counter()
 
@@ -312,7 +324,8 @@ class TDeedClip:
             # Match dudek's training path: when training on CUDA, each clip is moved
             # sample-by-sample before DataLoader collation, avoiding a huge CPU batch copy.
             clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
-            label_ids=label_ids.to(device) if device is not None else label_ids,
+            action_label_ids=action_label_ids.to(device) if device is not None else action_label_ids,
+            team_label_ids=team_label_ids.to(device) if device is not None else team_label_ids,
             displacement=displacement.to(device) if device is not None else displacement,
             profile=profile_metrics if profile else None,
         )
@@ -390,7 +403,8 @@ class CustomTDeedDataset(Dataset):
         )
         out = {
             "clip_tensor": item.clip_tensor,
-            "label_ids": item.label_ids,
+            "action_label_ids": item.action_label_ids,
+            "team_label_ids": item.team_label_ids,
             "displacement": item.displacement,
         }
         if self.profile_items:

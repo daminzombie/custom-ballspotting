@@ -84,6 +84,14 @@ def _train_options(command):
     command = click.option("--train_profile_steps", type=int, default=None)(command)
     command = click.option("--random_seed", type=int, default=None)(command)
     command = click.option("--device", type=str, default=None)(command)
+    command = click.option("--ce_foreground_scale", type=float, default=None)(command)
+    command = click.option("--team_loss_weight", type=float, default=None)(command)
+    command = click.option(
+        "--random-team-when-na/--no-random-team-when-na",
+        "random_team_when_na",
+        default=None,
+        help="Randomize 'not applicable' teams during training; default keeps them ignored for team loss.",
+    )(command)
     command = click.option(
         "--run-validation/--no-run-validation",
         "run_validation",

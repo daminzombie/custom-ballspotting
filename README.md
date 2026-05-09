@@ -1,12 +1,21 @@
 # custom-ballspotting
 
-`custom-ballspotting` is a reusable Python package for **team** ball action spotting with custom labels. It follows the same two-heads design as DUDEK: a RegNet + temporal shift backbone, SGP-Mixer temporal head, displacement loss, class weighting, frame/clip sampling, and video augmentations. Each action is modelled separately for the LEFT and RIGHT team, so the model output is:
+`custom-ballspotting` is a reusable Python package for **team** ball action spotting with custom labels. It uses a RegNet + temporal shift backbone, SGP-Mixer temporal stack, displacement loss, class weighting, frame/clip sampling, and video augmentations.
+
+The model now factorizes action spotting and team attribution into separate heads:
 
 ```text
-background + N×LEFT actions + N×RIGHT actions   →   2*N + 1 classes
+action head: background + N actions
+team head:   N actions × 2 teams (left/right)
 ```
 
-For the current **main** branch action set, `N = 19`, so the classifier has `39` classes. The **`dudek`** branch uses the SoccerNet BAS vocabulary (12 actions, `2*12+1` classes) aligned with DUDEK’s `BASLabel`; check out that branch for dudek-matching label strings and SoccerNet tooling without editing `actions.py`.
+At inference time those heads are combined when a legacy team/action score matrix is needed:
+
+```text
+P(action, team) = P(action) * P(team | action)
+```
+
+For the current **main** branch action set, `N = 19`, so the action head has `20` logits and the per-action team head has `19 × 2` logits. The **`dudek`** branch uses the SoccerNet BAS vocabulary (12 actions) aligned with DUDEK’s `BASLabel`; check out that branch for dudek-matching label strings and SoccerNet tooling without editing `actions.py`.
 
 ## Package Design
 
@@ -20,7 +29,7 @@ custom_ballspotting/
   inference.py     # reusable inference API
   cli.py           # thin command-line wrapper
   model/
-    tdeed.py       # team T-DEED model (2*N+1 head)
+    tdeed.py       # T-DEED model with separate action and per-action team heads
     layers.py      # SGP-Mixer and temporal shift layers
     shift.py
 ```
@@ -66,7 +75,7 @@ On this Windows workspace, if you are reusing the DUDEK venv, call:
 
 ## Custom actions (main branch)
 
-The action vocabulary is defined in `custom_ballspotting/actions.py` (broader than SoccerNet BAS). `Team` also includes **`"not applicable"`**; when **`random_team_when_na`** is enabled (default in **`TrainConfig`**), those annotations are assigned left/right at random for training, like dudek’s `random_team_when_no_team`.
+The action vocabulary is defined in `custom_ballspotting/actions.py` (broader than SoccerNet BAS). `Team` also includes **`"not applicable"`**. By default, **`random_team_when_na`** is **disabled**, so those annotations train the action head but are ignored by the team loss. Enable **`random_team_when_na`** only if you deliberately want dudek-style random left/right assignment for labels without a known team.
 
 ```python
 class Action(str, Enum):
@@ -91,13 +100,13 @@ class Action(str, Enum):
     GOAL = "goal"
 ```
 
-Each class also has an `ActionConfig`:
+Each class also has an `ActionConfig` for action-level metadata:
 
 ```python
 ActionConfig(weight, min_score, tolerance_seconds)
 ```
 
-Those values are used for training class weights and inference filtering/NMS. For rare but important classes (`goal`, `foul`, `save`, …), higher class weights help when the dataset is small.
+`ActionConfig.weight` is used for inference/postprocessing scale-like metadata, while **training CE weights** live in `TRAINING_CE_RELATIVE_WEIGHTS`. Decode thresholds and NMS windows live in `custom_ballspotting/inference.py` (`DEFAULT_DECODE_THRESHOLDS`, `DEFAULT_DECODE_NMS_WINDOW_FRAMES`). Action CE uses the training weights; team CE is trained separately and does not inherit action foreground weights.
 
 ## Dataset layout
 
@@ -113,7 +122,7 @@ Files must contain an **`annotations`** array. Each element is one event:
 |---|---|---|
 | **`label`** | string | Must match **`Action`** in `custom_ballspotting/actions.py` (e.g. **`pass`**, **`free_kick`**, **`shot`**). |
 | **`position`** | integer | Time of the event in **milliseconds** from the start of that video file. |
-| **`team`** | string | **`"left"`**, **`"right"`**, or **`"not applicable"`**. Optional — defaults to **`"left"`** when absent or unrecognised. With default **`random_team_when_na`**, **`"not applicable"`** is mapped to left or right at random. |
+| **`team`** | string | **`"left"`**, **`"right"`**, or **`"not applicable"`**. Optional — defaults to **`"left"`** when absent or unrecognised. With default **`random_team_when_na: false`**, **`"not applicable"`** trains the action target but is ignored by team CE. |
 
 Unknown **`label`** values are **skipped** (with one summary warning naming the unknown types).
 
@@ -180,7 +189,7 @@ final_posttrain_from_tdeed.example.json / final_posttrain_from_tdeed_720p.exampl
 inference.example.json / inference_720p.example.json / inference_224.example.json
 ```
 
-Training JSON needs only fields you want to override from **`TrainConfig`** (examples under `configs/` stay minimal). Dudek-aligned defaults already cover **`random_team_when_na`**, internal **`map_mine`** (**`val_map_*`**), **`soccernet_challenge_metric`** (**`at1`**), and **`val_run_soccernet_challenge_map`: `false`**. Add **`soccernet_path`** and **`val_run_soccernet_challenge_map`: `true`** when you want SoccerNet **`mAPevaluateTest`** during validation (install **`soccernet`**: `pip install 'custom-ballspotting[challenge]'`).
+Training JSON needs only fields you want to override from **`TrainConfig`** (examples under `configs/` stay minimal). Defaults cover **`random_team_when_na: false`**, **`team_loss_weight: 0.5`**, internal **`map_mine`** (**`val_map_*`**), **`soccernet_challenge_metric`** (**`at1`**), and **`val_run_soccernet_challenge_map`: `false`**. Add **`soccernet_path`** and **`val_run_soccernet_challenge_map`: `true`** when you want SoccerNet **`mAPevaluateTest`** during validation (install **`soccernet`**: `pip install 'custom-ballspotting[challenge]'`).
 
 Training and frame-extraction configs must include **`dataset_root`** (root of the clip-folder tree). Inference configs use **`video_path`** or **`video_dir`** (directory whose first `*.mp4` is used).
 
@@ -188,7 +197,7 @@ Paths inside config files are resolved **relative to the config file’s directo
 
 ### Training defaults (dudek-aligned)
 
-By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **`eval_metric`**. With **`eval_metric`: `"map"`** (default), **`map_mine`** is maximized for selection; if **`val_run_soccernet_challenge_map`** is **`true`** and SoccerNet challenge mAP runs successfully, **`challenge_mAP`** drives checkpoint selection (same idea as dudek **`BASTeamTDeedEvaluator`**). With **`eval_metric`: `"loss"`**, the best checkpoint uses lowest validation loss (`1.5 * CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected hyperparameters on a validation run.
+By default, **`run_validation`** is **`true`**: clip folders under **`dataset_root`** are split by video using **`train_split`**, each epoch runs training and validation, and the best checkpoint is chosen by **`eval_metric`**. With **`eval_metric`: `"map"`** (default), **`map_mine`** is maximized for selection; if **`val_run_soccernet_challenge_map`** is **`true`** and SoccerNet challenge mAP runs successfully, **`challenge_mAP`** drives checkpoint selection (same idea as dudek **`BASTeamTDeedEvaluator`**). With **`eval_metric`: `"loss"`**, the best checkpoint uses lowest validation loss (`1.5 * action_CE + team_loss_weight * team_CE + displacement`). Use **`--no-run-validation`** only for final full-dataset retraining after you have already selected hyperparameters on a validation run.
 
 Training logs: with an interactive TTY, **`tqdm`** shows loss, LR, and ETA on stderr; without a TTY (for example PM2), plain lines are printed at a throttled interval. **`epoch_summary.log`** under the TensorBoard run directory records one line per epoch. Increase **`log_every_steps`** if per-step plain logs are too noisy.
 
@@ -291,7 +300,7 @@ For each saved best checkpoint, the trainer also writes a sidecar metadata file:
 checkpoints/custom_final_product_posttrain_720p_20260428_073012_best.metadata.json
 ```
 
-The metadata records the experiment name, epoch, **`selection_metric`** (**`train_loss`** or **`val_loss`**), **`best_metric`**, source checkpoint, training **`config`** (including **`run_validation`**), **`num_action_classes`**, **`num_team_action_classes`** (always `2 × num_action_classes`), and train/validation clip counts.
+The metadata records the experiment name, epoch, **`selection_metric`** (**`train_loss`**, **`val_loss`**, or mAP), **`best_metric`**, source checkpoint, training **`config`** (including **`run_validation`**, **`team_loss_weight`**, and **`random_team_when_na`**), **`head_type`** (`"separate_action_team"`), **`team_head`** (`"per_action"`), **`num_action_classes`**, **`num_team_action_classes`** (the derived legacy joint foreground count, `2 × num_action_classes`), and train/validation clip counts.
 
 For inference, set `model_checkpoint_path` to the exact timestamped checkpoint
 you want to evaluate. This is intentional: it avoids silently using the wrong
@@ -299,7 +308,7 @@ run when several experiments exist.
 
 ## Posttrain From T-DEED/SoccerNetBall
 
-Use the T-DEED checkpoint as a backbone initializer and train a new team-aware `2*N+1` head on your final product dataset:
+Use the T-DEED checkpoint as a backbone initializer and train fresh action/team heads on your final product dataset:
 
 ```bash
 custom-ballspotting posttrain --config configs/final_posttrain_from_tdeed.example.json
@@ -327,13 +336,16 @@ _features.*
 _temp_fine.*
 ```
 
-The custom classifier head is initialised fresh:
+The custom prediction heads are initialised fresh:
 
 ```text
-background + 19×LEFT + 19×RIGHT   →   39 classes
+action head: background + 19 actions
+team head:   19 actions × 2 teams
 ```
 
 This is the recommended path when your custom dataset is small.
+
+Important: checkpoints trained with the older single joint `2*N+1` head are not load-compatible with this model via `load_all()`. To migrate, posttrain from a T-DEED/SoccerNetBall backbone checkpoint or another checkpoint saved with **`head_type: "separate_action_team"`**.
 
 The bundled `final_posttrain_from_tdeed*.json` examples run longer than a smoke test (`nr_epochs`: 30). Augmentation defaults match dudek **`train-challenge`** (`flip` / camera / crop at **0.1**, **`even_choice_proba`**: **0**). Raise **`even_choice_proba`** (for example toward **0.25**) if the dataset is tiny and labels are sparse. Those configs use **`train_batch_size`** / **`val_batch_size`** `1` and **`acc_grad_iter`** `8` so effective batch size stays reasonable on typical GPUs; adjust those fields if you need different memory usage.
 
@@ -434,13 +446,20 @@ Output format:
       "team": "left",
       "position": 14240,
       "gameTime": "1 - 00:14",
-      "confidence": 0.78
+      "confidence": 0.78,
+      "joint_confidence": 0.70,
+      "action_confidence": 0.78,
+      "team_confidence": 0.90,
+      "team_confidences": {
+        "left": 0.90,
+        "right": 0.10
+      }
     }
   ]
 }
 ```
 
-Each prediction now includes a **`team`** field (`"left"` or `"right"`). Inference applies per-class `min_score` and `tolerance_seconds` from `ACTION_CONFIGS`, running NMS independently for each `(action, team)` class.
+Each prediction includes a **`team`** field (`"left"` or `"right"`) plus separate confidence signals. **`confidence`** is the action confidence and is duplicated as **`action_confidence`** for clarity. **`team_confidence`** is the selected team probability for that action, **`team_confidences`** exposes both sides, and **`joint_confidence`** is `action_confidence * team_confidence`. Inference peak-picks and NMSes on the action confidence, then chooses the emitted team from the per-action team probabilities.
 
 ## Python API
 
@@ -456,6 +475,7 @@ config = TrainConfig(
     train_batch_size=1,
     val_batch_size=1,
     acc_grad_iter=8,
+    team_loss_weight=0.5,
 )
 
 train_from_dataset(
@@ -507,16 +527,17 @@ train_model(
 
 ## Recommended Workflow
 
-1. Define or update `custom_ballspotting/actions.py`. Ensure your `ground_truth.json` files include a `"team"` field per annotation (`"left"` or `"right"`); annotations without it default to `"left"`.
+1. Define or update `custom_ballspotting/actions.py`. Ensure your `ground_truth.json` files include a `"team"` field per annotation when known (`"left"` or `"right"`). Use `"not applicable"` only when the action label is useful but team supervision should be ignored.
 2. Arrange clip folders under **`dataset_root`**: each clip directory contains **`ground_truth.json`** and one **`*.mp4`** (see [Dataset layout](#dataset-layout)).
 3. Extract frames (`extract-frames --config …` with **`dataset_root`** in the JSON).
 4. Posttrain from a strong T-DEED/SoccerNetBall checkpoint (`posttrain --config …`).
 5. Run inference on sample videos (`infer-video` with **`--config`** or **`--video_path`** / **`--video_dir`**).
 6. Review false positives/negatives and adjust:
    - annotation quality,
-   - `ActionConfig.min_score`,
-   - `ActionConfig.tolerance_seconds`,
-   - class weights,
+   - `DEFAULT_DECODE_THRESHOLDS`,
+   - `DEFAULT_DECODE_NMS_WINDOW_FRAMES`,
+   - action CE weights,
+   - `team_loss_weight`,
    - augmentation settings.
 
 For your current situation, start with:

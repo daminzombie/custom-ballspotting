@@ -21,6 +21,8 @@
   "camera_move_proba": 0.1,
   "crop_proba": 0.1,
   "even_choice_proba": 0,
+  "team_loss_weight": 0.5,
+  "random_team_when_na": false,
   "run_validation": true,
   "train_split": 0.95,
   "eval_metric": "map",

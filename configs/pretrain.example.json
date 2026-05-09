@@ -3,5 +3,7 @@
   "save_as": "../checkpoints/{experiment_name}_{timestamp}",
   "experiment_name": "custom_pretrain",
   "features_model_name": "regnety_002",
+  "team_loss_weight": 0.5,
+  "random_team_when_na": false,
   "train_split": 0.8
 }

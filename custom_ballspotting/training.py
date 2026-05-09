@@ -16,6 +16,7 @@ from custom_ballspotting.actions import (
     Action,
     NUM_ACTION_CLASSES,
     NUM_TEAM_ACTION_CLASSES,
+    TEAM_IGNORE_INDEX,
     TRAINING_CE_RELATIVE_WEIGHTS,
 )
 from custom_ballspotting.checkpoints import (
@@ -68,8 +69,8 @@ class TrainConfig:
     val_map_use_snms: bool = True
     val_map_snms_class_window: int = 12
     val_map_snms_threshold: float = 0.01
-    #: Resolve ``Team.NOT_APPLICABLE`` to left/right at random when loading GT (dudek-style).
-    random_team_when_na: bool = True
+    #: Keep ``Team.NOT_APPLICABLE`` out of team supervision by default.
+    random_team_when_na: bool = False
     #: Directory or zip with SoccerNet ``Labels-ball.json`` per game (``league/season/match/``).
     soccernet_path: str | None = None
     #: Run ``mAPevaluateTest`` / ``average_mAP`` like dudek ``BASTeamTDeedEvaluator.eval``.
@@ -90,6 +91,8 @@ class TrainConfig:
     #: for every foreground class; background CE weight is always ``1.0``.
     #: E.g. ``5.0`` with pass relative ``1.0`` → pass gets CE weight ``5.0`` vs bg ``1.0``.
     ce_foreground_scale: float = 5.0
+    #: Weight for the auxiliary team CE, applied only on foreground frames with a known team.
+    team_loss_weight: float = 0.5
     #: Save ``epochs/epoch_NNN.pt`` and ``metadata/epoch_NNN.metadata.json`` each epoch.
     save_epoch_checkpoints: bool = True
 
@@ -188,17 +191,17 @@ def train_model(
 
     epoch_summary_path = os.path.join(run_log_dir, "epoch_summary.log")
 
-    # CE weight vector: 2*N+1 entries — background=1.0, then LEFT actions, then RIGHT
-    # (same CE weight per action for both teams).
-    per_action_ce = [
-        config.ce_foreground_scale * TRAINING_CE_RELATIVE_WEIGHTS[action]
-        for action in Action
-    ]
-    class_weights = torch.tensor(
-        [1.0] + per_action_ce + per_action_ce,
+    # Action CE weight vector: background=1.0, then one weight per action.
+    action_class_weights = torch.tensor(
+        [1.0]
+        + [
+            config.ce_foreground_scale * TRAINING_CE_RELATIVE_WEIGHTS[action]
+            for action in Action
+        ],
         dtype=torch.float32,
         device=config.device,
     )
+    team_class_weights = None
     use_map = config.eval_metric == "map" and config.run_validation and val_loader is not None
     if config.eval_metric == "map" and not config.run_validation:
         print(
@@ -239,11 +242,13 @@ def train_model(
                 model,
                 train_loader,
                 config.device,
-                class_weights,
+                action_class_weights,
+                team_class_weights,
                 optimizer=optimizer,
                 scaler=scaler,
                 scheduler=scheduler,
                 acc_grad_iter=config.acc_grad_iter,
+                team_loss_weight=config.team_loss_weight,
                 epoch_index=epoch,
                 nr_epochs=config.nr_epochs,
                 phase="train",
@@ -259,7 +264,9 @@ def train_model(
                     model,
                     val_loader,
                     config.device,
-                    class_weights,
+                    action_class_weights,
+                    team_class_weights,
+                    team_loss_weight=config.team_loss_weight,
                     epoch_index=epoch,
                     nr_epochs=config.nr_epochs,
                     phase="val",
@@ -400,6 +407,8 @@ def train_model(
                     "best_loss_metric": best_loss_metric,
                     "pretrained_checkpoint_path": pretrained_checkpoint_path,
                     "config": config.__dict__,
+                    "head_type": "separate_action_team",
+                    "team_head": "per_action",
                     "num_action_classes": NUM_ACTION_CLASSES,
                     "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
                     "num_train_clips": len(train_clips),
@@ -441,6 +450,8 @@ def train_model(
                     "val_challenge_mAP": epoch_challenge_map,
                     "pretrained_checkpoint_path": pretrained_checkpoint_path,
                     "config": config.__dict__,
+                    "head_type": "separate_action_team",
+                    "team_head": "per_action",
                     "num_action_classes": NUM_ACTION_CLASSES,
                     "num_team_action_classes": NUM_TEAM_ACTION_CLASSES,
                     "num_train_clips": len(train_clips),
@@ -484,11 +495,13 @@ def run_epoch(
     model,
     loader,
     device,
-    class_weights,
+    action_class_weights,
+    team_class_weights,
     optimizer=None,
     scaler=None,
     scheduler=None,
     acc_grad_iter: int = 1,
+    team_loss_weight: float = 0.5,
     epoch_index: int | None = None,
     nr_epochs: int | None = None,
     phase: str = "train",
@@ -538,31 +551,56 @@ def run_epoch(
                     torch.cuda.synchronize(device)
 
             clip_tensor = batch["clip_tensor"]
-            label_ids = batch["label_ids"]
+            action_label_ids = batch["action_label_ids"]
+            team_label_ids = batch["team_label_ids"]
             displacement = batch["displacement"]
             move_start_t = time.perf_counter()
             if clip_tensor.device.type != device_type:
                 clip_tensor = clip_tensor.to(device, non_blocking=use_cuda)
-            if label_ids.device.type != device_type:
-                label_ids = label_ids.to(device, non_blocking=use_cuda)
+            if action_label_ids.device.type != device_type:
+                action_label_ids = action_label_ids.to(device, non_blocking=use_cuda)
+            if team_label_ids.device.type != device_type:
+                team_label_ids = team_label_ids.to(device, non_blocking=use_cuda)
             if displacement.device.type != device_type:
                 displacement = displacement.to(device, non_blocking=use_cuda)
             clip_tensor = clip_tensor.float()
-            label_ids = label_ids.long()
+            action_label_ids = action_label_ids.long()
+            team_label_ids = team_label_ids.long()
             displacement = displacement.float()
             _sync_if_profile()
             forward_start_t = time.perf_counter()
             with torch.amp.autocast(device_type=device_type, enabled=use_cuda):
                 outputs = model(clip_tensor, inference=not training)
-                logits = outputs["logits"].reshape(-1, NUM_TEAM_ACTION_CLASSES + 1)
-                labels = label_ids.reshape(-1)
-                cls_loss = F.cross_entropy(logits, labels, weight=class_weights)
+                action_logits = outputs["action_logits"].reshape(-1, NUM_ACTION_CLASSES + 1)
+                action_labels = action_label_ids.reshape(-1)
+                cls_loss = F.cross_entropy(
+                    action_logits,
+                    action_labels,
+                    weight=action_class_weights,
+                )
+                flat_team_logits = outputs["team_logits"].reshape(-1, NUM_ACTION_CLASSES, 2)
+                team_labels = team_label_ids.reshape(-1)
+                known_team_mask = (action_labels > 0) & (team_labels != TEAM_IGNORE_INDEX)
+                if known_team_mask.any():
+                    target_action_indices = action_labels[known_team_mask] - 1
+                    selected_team_logits = flat_team_logits[
+                        known_team_mask,
+                        target_action_indices,
+                    ]
+                    team_loss = F.cross_entropy(
+                        selected_team_logits,
+                        team_labels[known_team_mask],
+                        weight=team_class_weights,
+                    )
+                else:
+                    team_loss = outputs["team_logits"].sum() * 0.0
                 displ_loss = F.mse_loss(outputs["displacement"], displacement)
-                loss = 1.5 * cls_loss + displ_loss
+                loss = 1.5 * cls_loss + team_loss_weight * team_loss + displ_loss
             _sync_if_profile()
             scalar_start_t = time.perf_counter()
             loss_value = float(loss.detach().cpu())
             cls_loss_value = float(cls_loss.detach().cpu())
+            team_loss_value = float(team_loss.detach().cpu())
             displ_loss_value = float(displ_loss.detach().cpu())
             scalar_end_t = time.perf_counter()
             total_loss += loss_value
@@ -593,6 +631,7 @@ def run_epoch(
                 writer.add_scalar(f"loss_step/{phase}", loss_value, global_step)
                 writer.add_scalar(f"loss_step/{phase}_running", running_loss, global_step)
                 writer.add_scalar(f"loss_step/{phase}_cls", cls_loss_value, global_step)
+                writer.add_scalar(f"loss_step/{phase}_team", team_loss_value, global_step)
                 writer.add_scalar(
                     f"loss_step/{phase}_displacement", displ_loss_value, global_step
                 )
@@ -639,6 +678,7 @@ def run_epoch(
                     "loss": f"{loss_value:.4f}",
                     "run": f"{running_loss:.4f}",
                     "cls": f"{cls_loss_value:.4f}",
+                    "team": f"{team_loss_value:.4f}",
                     "disp": f"{displ_loss_value:.4f}",
                     "t": f"{avg_step_s:.2f}s",
                     "eta": _format_duration(epoch_eta_s),
@@ -659,6 +699,7 @@ def run_epoch(
                         loss=loss_value,
                         running_loss=running_loss,
                         cls_loss=cls_loss_value,
+                        team_loss=team_loss_value,
                         displ_loss=displ_loss_value,
                         lr=lr_now,
                         avg_step_s=avg_step_s,
@@ -690,6 +731,7 @@ def _format_step_log(
     loss: float,
     running_loss: float,
     cls_loss: float,
+    team_loss: float,
     displ_loss: float,
     lr: float | None,
     avg_step_s: float | None = None,
@@ -709,6 +751,7 @@ def _format_step_log(
         f"loss={loss:.6f} "
         f"running_loss={running_loss:.6f} "
         f"cls_loss={cls_loss:.6f} "
+        f"team_loss={team_loss:.6f} "
         f"displacement_loss={displ_loss:.6f}"
         f"{lr_value}"
         f"{timing_value}"
