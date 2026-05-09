@@ -126,28 +126,6 @@ ACTION_CLASS_INDEX: dict[str, int] = {
 NUM_ACTION_CLASSES: int = len(ACTION_CLASS_INDEX)
 # Total foreground classes = N actions × 2 teams; head output = 2*N + 1 (incl. background)
 NUM_TEAM_ACTION_CLASSES: int = 2 * NUM_ACTION_CLASSES
-TEAM_CLASS_INDEX: dict[Team, int] = {
-    Team.LEFT: 0,
-    Team.RIGHT: 1,
-}
-TEAM_IGNORE_INDEX = -100
-
-
-def action_to_index(action: Action | str) -> int:
-    """Return the action-head class index for an action (background is 0)."""
-    return ACTION_CLASS_INDEX[Action(action).value] + 1
-
-
-def index_to_action(index: int) -> Action | None:
-    """Decode an action-head class index, or None for background / out of range."""
-    if index <= 0 or index > NUM_ACTION_CLASSES:
-        return None
-    return list(Action)[index - 1]
-
-
-def team_to_index(team: Team) -> int:
-    """Return the team-head class index, or TEAM_IGNORE_INDEX when not supervised."""
-    return TEAM_CLASS_INDEX.get(team, TEAM_IGNORE_INDEX)
 
 
 def label_to_index(action: Action | str, team: Team = Team.LEFT) -> int:
