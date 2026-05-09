@@ -70,6 +70,7 @@ def _train_options(command):
     command = click.option("--nr_epochs", type=int, default=None)(command)
     command = click.option("--warm_up_epochs", type=int, default=None)(command)
     command = click.option("--learning_rate", type=float, default=None)(command)
+    command = click.option("--weight_decay", type=float, default=None)(command)
     command = click.option("--train_batch_size", type=int, default=None)(command)
     command = click.option("--val_batch_size", type=int, default=None)(command)
     command = click.option("--acc_grad_iter", type=int, default=None)(command)

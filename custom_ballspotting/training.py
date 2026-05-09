@@ -52,6 +52,8 @@ class TrainConfig:
     nr_epochs: int = 25
     warm_up_epochs: int = 1
     learning_rate: float = 0.0003
+    #: AdamW decoupled weight decay. Default ``0`` preserves older configs exactly.
+    weight_decay: float = 0.0
     train_batch_size: int = 1
     val_batch_size: int = 1
     acc_grad_iter: int = 8
@@ -152,7 +154,11 @@ def train_model(
         model.load_backbone(pretrained_checkpoint_path)
     model.to(config.device)
 
-    optimizer = torch.optim.AdamW(model.parameters(), lr=config.learning_rate)
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=config.learning_rate,
+        weight_decay=config.weight_decay,
+    )
     scaler = torch.amp.GradScaler("cuda") if device_type == "cuda" else None
     use_cuda = device_type == "cuda"
     # When using CUDA, datasets already return CUDA tensors to match dudek's
