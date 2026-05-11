@@ -12,7 +12,8 @@ class Action(str, Enum):
     RECOVERY = "recovery"
     TACKLE = "tackle"
     INTERCEPTION = "interception"
-    BALL_OUT_OF_PLAY = "ball_out_of_play"
+    BALL_OUT_OF_PLAY_CLEAR = "ball_out_of_play_clear"
+    BALL_OUT_OF_PLAY_DISTANT = "ball_out_of_play_distant"
     CLEARANCE = "clearance"
     TAKE_ON = "take_on"
     SUBSTITUTION = "substitution"
@@ -42,7 +43,8 @@ ACTION_CONFIGS: dict[Action, ActionConfig] = {
     Action.RECOVERY: ActionConfig(1.5, 0.0, 1.5),
     Action.TACKLE: ActionConfig(2.5, 0.1, 1.5),
     Action.INTERCEPTION: ActionConfig(2.8, 0.5, 2.0),
-    Action.BALL_OUT_OF_PLAY: ActionConfig(2.9, 0.5, 2.0),
+    Action.BALL_OUT_OF_PLAY_CLEAR: ActionConfig(2.9, 0.5, 2.0),
+    Action.BALL_OUT_OF_PLAY_DISTANT: ActionConfig(2.9, 0.5, 2.0),
     Action.CLEARANCE: ActionConfig(3.1, 0.5, 2.0),
     Action.TAKE_ON: ActionConfig(3.2, 0.5, 2.0),
     Action.SUBSTITUTION: ActionConfig(4.2, 0.5, 2.0),
@@ -67,7 +69,8 @@ TRAINING_CE_RELATIVE_WEIGHTS: dict[Action, float] = {
     Action.RECOVERY: 1.5,
     Action.TACKLE: 2.5,
     Action.INTERCEPTION: 2.8,
-    Action.BALL_OUT_OF_PLAY: 2.9,
+    Action.BALL_OUT_OF_PLAY_CLEAR: 2.9,
+    Action.BALL_OUT_OF_PLAY_DISTANT: 2.9,
     Action.CLEARANCE: 3.1,
     Action.TAKE_ON: 3.2,
     Action.SUBSTITUTION: 4.2,

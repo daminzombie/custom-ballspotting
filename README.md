@@ -4,7 +4,7 @@
 
 The model uses a single **action head**: background plus one logit per action class.
 
-For the current **main** branch action set, `N = 19`, so the head has **`N + 1 = 20`** logits. The **`dudek`** branch uses the SoccerNet BAS vocabulary (12 actions) aligned with DUDEK’s `BASLabel`; check out that branch for dudek-matching label strings and SoccerNet tooling without editing `actions.py`.
+For the current **main** branch action set, `N = 20`, so the head has **`N + 1 = 21`** logits. The **`dudek`** branch uses the SoccerNet BAS vocabulary (12 actions) aligned with DUDEK’s `BASLabel`; check out that branch for dudek-matching label strings and SoccerNet tooling without editing `actions.py`.
 
 ## Package Design
 
@@ -77,7 +77,8 @@ class Action(str, Enum):
     RECOVERY = "recovery"
     TACKLE = "tackle"
     INTERCEPTION = "interception"
-    BALL_OUT_OF_PLAY = "ball_out_of_play"
+    BALL_OUT_OF_PLAY_CLEAR = "ball_out_of_play_clear"
+    BALL_OUT_OF_PLAY_DISTANT = "ball_out_of_play_distant"
     CLEARANCE = "clearance"
     TAKE_ON = "take_on"
     SUBSTITUTION = "substitution"
@@ -327,7 +328,7 @@ _temp_fine.*
 The custom prediction head is initialised fresh:
 
 ```text
-action head: background + 19 actions
+action head: background + 20 actions
 ```
 
 This is the recommended path when your custom dataset is small.
