@@ -1,11 +1,10 @@
-"""mAP evaluation for team ball action spotting.
+"""mAP evaluation for ball action spotting (no team dimension).
 
 The ranking / AP integration in :func:`compute_map` matches dudek
 ``TDeedMAPEvaluator.compute_map`` (``map_mine``).
 
 :class:`ValMapMetrics` can also include SoccerNet ``mAPevaluateTest`` / ``average_mAP``
-(``challenge_mAP``) when ``soccernet_path`` and per-video ``soccernet_game_id`` are set,
-matching dudek ``BASTeamTDeedEvaluator.eval`` alongside ``map_mine``.
+(``challenge_mAP``) when ``soccernet_path`` and per-video ``soccernet_game_id`` are set.
 """
 from __future__ import annotations
 
@@ -17,10 +16,9 @@ import torch
 from torch.utils.data import DataLoader
 
 from custom_ballspotting.actions import (
-    NUM_TEAM_ACTION_CLASSES,
-    Team,
-    index_to_label,
-    label_to_index,
+    NUM_ACTION_CLASSES,
+    Action,
+    foreground_column_for_action,
 )
 from custom_ballspotting.data import CustomTDeedDataset, VideoClip
 from custom_ballspotting.inference import score_video
@@ -43,8 +41,8 @@ class VideoScoredData:
     """Per-video scores and targets needed by :func:`compute_map`."""
 
     video_id: str
-    scores: np.ndarray  # (num_frames, 2*N)  foreground only, no background col
-    targets: np.ndarray  # (num_frames, 2*N)  binary, 1 at ground-truth event frames
+    scores: np.ndarray  # (num_frames, N)  foreground only, no background col
+    targets: np.ndarray  # (num_frames, N)  binary, 1 at ground-truth event frames
 
 
 def scores_fg_to_challenge_results_json(
@@ -52,16 +50,13 @@ def scores_fg_to_challenge_results_json(
     fps: float,
     game_path: str,
 ) -> dict:
-    """Dense per-frame predictions JSON (dudek ``_TeamBASScoredVideo.annotate`` style)."""
+    """Dense per-frame predictions JSON for SoccerNet challenge mAP evaluation."""
     predictions: list[dict] = []
     for i in range(scores_fg.shape[0]):
         x = scores_fg[i]
         confidence = float(np.max(x))
         label_col = int(np.argmax(x))
-        mapped = index_to_label(label_col + 1)
-        if mapped is None:
-            continue
-        action, team = mapped
+        action = list(Action)[label_col]
         position = int(i / fps * 1000)
         total_seconds = position // 1000
         half = 1 if total_seconds < 45 * 60 else 2
@@ -74,7 +69,6 @@ def scores_fg_to_challenge_results_json(
                 "position": position,
                 "confidence": confidence,
                 "half": half,
-                "team": team.value,
             }
         )
     return {"UrlLocal": game_path, "predictions": predictions}
@@ -217,7 +211,7 @@ def val_map(
                     clips,
                     loader,
                     device,
-                    num_classes_with_background=NUM_TEAM_ACTION_CLASSES + 1,
+                    num_classes_with_background=NUM_ACTION_CLASSES + 1,
                 )
             else:
                 full_scores = score_video(model, clips, loader, device=device)
@@ -232,13 +226,11 @@ def val_map(
                 )
 
             fps = float(video_record.metadata_fps)
-            targets = np.zeros((num_frames, NUM_TEAM_ACTION_CLASSES), dtype=np.float32)
+            targets = np.zeros((num_frames, NUM_ACTION_CLASSES), dtype=np.float32)
             for ann in video_record.annotations:
-                if ann.team == Team.NOT_APPLICABLE:
-                    continue
                 frame = ann.frame_nr(fps)
                 if frame < num_frames:
-                    class_idx = label_to_index(ann.label, ann.team) - 1
+                    class_idx = foreground_column_for_action(ann.label)
                     targets[frame, class_idx] = 1.0
 
             video_data.append(
@@ -256,7 +248,7 @@ def val_map(
                 else:
                     challenge_merged[gid]["predictions"].extend(payload["predictions"])
 
-    map_mine = compute_map(video_data, delta_frames, NUM_TEAM_ACTION_CLASSES)
+    map_mine = compute_map(video_data, delta_frames, NUM_ACTION_CLASSES)
 
     challenge_mAP: float | None = None
     if run_soccernet_challenge_map:

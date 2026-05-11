@@ -6,8 +6,6 @@
   "features_model_name": "regnety_002",
   "soccernet_path": "../.data/SoccerNetGS",
   "val_run_soccernet_challenge_map": true,
-  "team_loss_weight": 0.5,
-  "random_team_when_na": false,
   "clip_frames_count": 80,
   "overlap": 60,
   "sgp_ks": 5,

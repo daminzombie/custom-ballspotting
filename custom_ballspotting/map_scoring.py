@@ -1,8 +1,7 @@
-"""Score aggregation aligned with dudek team-BAS evaluation (``map_mine`` path).
+"""Score aggregation aligned with dense BAS evaluation (``map_mine`` path).
 
-Mirrors ``TeamTDeed2HeadsPrediction`` displacement + ``align_with_original_video``
-(linear) and ``compute_team_scores_matrix`` averaging, then optional
-``soft_non_maximum_suppression`` as in ``BASTeamTDeedEvaluator.eval``.
+Mirrors displacement-aware scoring, dense per-frame fusion averaging across
+overlapping clips, then optional ``soft_non_maximum_suppression``.
 """
 
 from __future__ import annotations
@@ -15,7 +14,7 @@ from torch.utils.data import DataLoader
 from tqdm import tqdm
 
 from custom_ballspotting.data import VideoClip
-from custom_ballspotting.model.tdeed import team_action_probabilities
+from custom_ballspotting.model.tdeed import action_probabilities
 
 
 def soft_non_maximum_suppression(
@@ -71,7 +70,7 @@ def soft_non_maximum_suppression(
 
 
 def _displace_probabilities_timeline(probs: np.ndarray, displacement: np.ndarray) -> np.ndarray:
-    """Same logic as dudek ``TeamTDeed2HeadsPrediction.displaced_label_predictions``."""
+    """Move each timestep's probability vector by its predicted displacement."""
     t_len, num_classes = probs.shape
     aux = np.zeros_like(probs)
     for t in range(t_len):
@@ -118,7 +117,7 @@ def dudek_style_scores_matrix(
     *,
     num_classes_with_background: int,
 ) -> np.ndarray:
-    """Average overlapping clip predictions like ``compute_team_scores_matrix``."""
+    """Average overlapping clip predictions into a dense per-frame score matrix."""
     last_frame = max(frame.original_video_frame_nr for clip in clips for frame in clip.frames)
     num_frames = last_frame + 1
     scores_matrix = np.zeros((num_frames, num_classes_with_background), dtype=np.float32)
@@ -132,9 +131,9 @@ def dudek_style_scores_matrix(
             clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=True)
-                joint_probs, _, _ = team_action_probabilities(outputs)
+                probs_tensor = action_probabilities(outputs)
                 displacements = outputs["displacement"]
-            probs = joint_probs.detach().cpu().numpy()
+            probs = probs_tensor.detach().cpu().numpy()
             displ_np = displacements.detach().cpu().numpy()
 
             for b in range(probs.shape[0]):

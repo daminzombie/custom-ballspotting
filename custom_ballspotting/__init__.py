@@ -2,9 +2,7 @@ from custom_ballspotting.actions import (
     Action,
     ACTION_CONFIGS,
     NUM_ACTION_CLASSES,
-    NUM_TEAM_ACTION_CLASSES,
     TRAINING_CE_RELATIVE_WEIGHTS,
-    Team,
 )
 from custom_ballspotting.eval import compute_map, val_map
 from custom_ballspotting.inference import (
@@ -16,11 +14,9 @@ from custom_ballspotting.inference import (
 
 __all__ = [
     "Action",
-    "Team",
     "ACTION_CONFIGS",
     "TRAINING_CE_RELATIVE_WEIGHTS",
     "NUM_ACTION_CLASSES",
-    "NUM_TEAM_ACTION_CLASSES",
     "compute_map",
     "val_map",
     "infer_video",

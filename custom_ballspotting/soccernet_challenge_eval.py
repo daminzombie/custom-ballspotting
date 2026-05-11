@@ -46,7 +46,6 @@ def compute_amAP(
     closests_numpy,
     framerate=25,
     metric="tight",
-    event_team=False,
 ):
     _ensure_soccernet()
 
@@ -67,11 +66,6 @@ def compute_amAP(
     else:
         raise ValueError(f"Unknown metric {metric!r}")
 
-    if event_team:
-        ntargets = np.zeros(targets_numpy[0].shape[1])
-        for i in range(len(targets_numpy)):
-            ntargets += targets_numpy[i].sum(axis=0)
-
     (
         mAP,
         mAP_per_class,
@@ -86,49 +80,6 @@ def compute_amAP(
         framerate=framerate,
         deltas=deltas,
     )
-
-    if event_team:
-        mAP_per_class = mAP_per_class * ntargets
-        mAP_per_class = np.array(
-            [
-                (
-                    (mAP_per_class[i * 2] + mAP_per_class[(i * 2) + 1])
-                    / (ntargets[i * 2] + ntargets[i * 2 + 1])
-                    if (ntargets[i * 2] + ntargets[i * 2 + 1]) > 0
-                    else np.nan
-                )
-                for i in range(len(mAP_per_class) // 2)
-            ]
-        )
-        mAP = np.nanmean(mAP_per_class)
-
-        mAP_per_class_visible = mAP_per_class_visible * ntargets
-        mAP_per_class_visible = np.array(
-            [
-                (
-                    (mAP_per_class_visible[i * 2] + mAP_per_class_visible[(i * 2) + 1])
-                    / (ntargets[i * 2] + ntargets[i * 2 + 1])
-                    if (ntargets[i * 2] + ntargets[i * 2 + 1]) > 0
-                    else np.nan
-                )
-                for i in range(len(mAP_per_class_visible) // 2)
-            ]
-        )
-        mAP_visible = np.nanmean(mAP_per_class_visible)
-
-        mAP_per_class_unshown = mAP_per_class_unshown * ntargets
-        mAP_per_class_unshown = np.array(
-            [
-                (
-                    (mAP_per_class_unshown[i * 2] + mAP_per_class_unshown[(i * 2) + 1])
-                    / (ntargets[i * 2] + ntargets[i * 2 + 1])
-                    if (ntargets[i * 2] + ntargets[i * 2 + 1]) > 0
-                    else np.nan
-                )
-                for i in range(len(mAP_per_class_unshown) // 2)
-            ]
-        )
-        mAP_unshown = np.nanmean(mAP_per_class_unshown)
 
     return {
         "mAP": mAP,
@@ -146,7 +97,6 @@ def label2vector(
     framerate=2,
     version=2,
     EVENT_DICTIONARY=None,
-    event_team=False,
 ):
     if EVENT_DICTIONARY is None:
         EVENT_DICTIONARY = {}
@@ -167,11 +117,7 @@ def label2vector(
         else:
             frame = framerate * (seconds + 60 * minutes)
 
-        if not event_team:
-            label = EVENT_DICTIONARY[event] - 1
-        else:
-            event = event + "-" + annotation["team"]
-            label = EVENT_DICTIONARY[event] - 1
+        label = EVENT_DICTIONARY[event] - 1
 
         value = 1
         if "visibility" in annotation.keys():
@@ -191,7 +137,6 @@ def predictions2vector(
     version=2,
     framerate=2,
     EVENT_DICTIONARY=None,
-    event_team=False,
 ):
     if EVENT_DICTIONARY is None:
         EVENT_DICTIONARY = {}
@@ -205,11 +150,7 @@ def predictions2vector(
 
         frame = int(framerate * (time / 1000))
 
-        if not event_team:
-            label = EVENT_DICTIONARY[event] - 1
-        else:
-            event = event + "-" + annotation["team"]
-            label = EVENT_DICTIONARY[event] - 1
+        label = EVENT_DICTIONARY[event] - 1
 
         value = annotation["confidence"]
 
@@ -225,7 +166,6 @@ def mAPevaluateTest(
     Predictions_path,
     prediction_file="results_spotting.json",
     printed=False,
-    event_team=True,
     metric="at1",
     event_dictionary: dict[str, int] | None = None,
 ):
@@ -252,7 +192,6 @@ def mAPevaluateTest(
             version=2,
             EVENT_DICTIONARY=classes,
             framerate=FPS_SN,
-            event_team=event_team,
         )
 
         if zipfile.is_zipfile(Predictions_path):
@@ -269,7 +208,6 @@ def mAPevaluateTest(
             version=2,
             EVENT_DICTIONARY=classes,
             framerate=FPS_SN,
-            event_team=event_team,
         )
 
         targets_numpy.append(labels)
@@ -294,18 +232,16 @@ def mAPevaluateTest(
         closests_numpy,
         framerate=FPS_SN,
         metric=metric,
-        event_team=event_team,
     )
 
 
-def team_bas_event_dictionary() -> dict[str, int]:
-    """``EVENT_DICTIONARY`` keys ``{label}-{team}`` matching dudek / ``TdeedVideoClip``."""
-    from custom_ballspotting.actions import Action, Team
+def action_event_dictionary() -> dict[str, int]:
+    """``EVENT_DICTIONARY`` keys for action-only ball spotting."""
+    from custom_ballspotting.actions import Action
 
     classes: dict[str, int] = {}
     for i, action in enumerate(Action):
-        classes[f"{action.value}-{Team.LEFT.value}"] = i + 1
-        classes[f"{action.value}-{Team.RIGHT.value}"] = i + 1 + len(Action)
+        classes[action.value] = i + 1
     return classes
 
 
@@ -340,9 +276,8 @@ def run_mapevaluate_test_with_zip(
             zip_path,
             prediction_file="results_spotting.json",
             printed=False,
-            event_team=True,
             metric=metric,
-            event_dictionary=team_bas_event_dictionary(),
+            event_dictionary=action_event_dictionary(),
         )
     finally:
         shutil.rmtree(tmp_root, ignore_errors=True)

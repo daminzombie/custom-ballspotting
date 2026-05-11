@@ -10,17 +10,13 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from custom_ballspotting.actions import (
-    Action,
-    NUM_ACTION_CLASSES,
-    NUM_TEAM_ACTION_CLASSES,
-)
+from custom_ballspotting.actions import Action, NUM_ACTION_CLASSES
 from custom_ballspotting.checkpoints import read_checkpoint_metadata
 from custom_ballspotting.data import (
     CustomTDeedDataset,
     VideoRecord,
 )
-from custom_ballspotting.model.tdeed import CustomTDeedModule, team_action_probabilities
+from custom_ballspotting.model.tdeed import CustomTDeedModule, action_probabilities
 
 _logger = logging.getLogger(__name__)
 
@@ -123,19 +119,23 @@ def resolve_infer_video_params(
                 "Use a checkpoint trained with the same Action enum / actions.py, or "
                 "align the code with the checkpoint."
             )
-        n_team_saved = meta.get("num_team_action_classes")
-        if n_team_saved is not None and int(n_team_saved) != NUM_TEAM_ACTION_CLASSES:
-            raise ValueError(
-                f"Checkpoint expects num_team_action_classes={n_team_saved} (see metadata), "
-                f"but this install has NUM_TEAM_ACTION_CLASSES={NUM_TEAM_ACTION_CLASSES}. "
-                "Use a checkpoint trained with the same Action enum / actions.py."
-            )
         head_type = meta.get("head_type")
-        if head_type is not None and head_type != "separate_action_team":
+        if head_type == "separate_action_team":
+            raise ValueError(
+                "This checkpoint uses the retired two-head architecture "
+                "(head_type='separate_action_team'). Retrain with the current "
+                "action-only model or load backbone weights only."
+            )
+        if head_type is not None and head_type != "action_only":
             raise ValueError(
                 f"Checkpoint head_type={head_type!r} is not compatible with the "
-                "separate action/team model head. Retrain custom-ballspotting or "
-                "use a matching checkpoint."
+                "action-only model. Use a checkpoint saved by this package with "
+                "head_type='action_only'."
+            )
+        if meta.get("num_team_action_classes") is not None:
+            _logger.warning(
+                "Checkpoint metadata still lists num_team_action_classes; "
+                "ignoring it for action-only inference.",
             )
     else:
         _logger.warning(
@@ -320,13 +320,12 @@ def infer_video(
         model.to(p["device"])
         model.eval()
 
-    scores, displacements, action_scores, team_scores = score_video(
+    scores, displacements = score_video(
         model,
         clips,
         loader,
         device=p["device"],
         return_displacements=True,
-        return_components=True,
     )
     fps_infer = float(video.metadata_fps)
     if not math.isfinite(fps_infer) or fps_infer <= 0:
@@ -339,8 +338,6 @@ def infer_video(
         decode_nms_window_frames=p["decode_nms_window_frames"],
         displacements=displacements if p["use_displacement_refinement"] else None,
         displacement_max_frames=p["displacement_max_frames"],
-        action_scores=action_scores,
-        team_scores=team_scores,
     )
     result = {
         "video_path": video.video_path,
@@ -369,14 +366,11 @@ def score_video(
     loader,
     device: str,
     return_displacements: bool = False,
-    return_components: bool = False,
 ):
     if not clips:
         raise ValueError("No clips generated for inference.")
     last_frame = max(frame.original_video_frame_nr for clip in clips for frame in clip.frames)
-    scores = np.zeros((last_frame + 1, NUM_TEAM_ACTION_CLASSES + 1), dtype=np.float32)
-    action_scores = np.zeros((last_frame + 1, NUM_ACTION_CLASSES + 1), dtype=np.float32)
-    team_scores = np.zeros((last_frame + 1, NUM_ACTION_CLASSES, 2), dtype=np.float32)
+    scores = np.zeros((last_frame + 1, NUM_ACTION_CLASSES + 1), dtype=np.float32)
     displacement_sums = np.zeros(last_frame + 1, dtype=np.float32)
     counts = np.zeros((last_frame + 1, 1), dtype=np.float32)
 
@@ -387,10 +381,7 @@ def score_video(
             clip_tensor = batch["clip_tensor"].to(device, non_blocking=use_cuda).float()
             with torch.amp.autocast(device_type=device, enabled=device == "cuda"):
                 outputs = model(clip_tensor, inference=True)
-                joint_probs, action_probs, team_probs = team_action_probabilities(outputs)
-                probs = joint_probs.detach().cpu().numpy()
-                action_probs_np = action_probs.detach().cpu().numpy()
-                team_probs_np = team_probs.detach().cpu().numpy()
+                probs = action_probabilities(outputs).detach().cpu().numpy()
                 displacements = outputs["displacement"].detach().cpu().numpy()
             for batch_idx in range(probs.shape[0]):
                 clip = clips[clip_offset + batch_idx]
@@ -401,21 +392,13 @@ def score_video(
                         break
                     original_frame = frame.original_video_frame_nr
                     scores[original_frame] += probs[batch_idx, frame_idx]
-                    action_scores[original_frame] += action_probs_np[batch_idx, frame_idx]
-                    team_scores[original_frame] += team_probs_np[batch_idx, frame_idx]
                     displacement_sums[original_frame] += displacements[batch_idx, frame_idx]
                     counts[original_frame] += 1
             clip_offset += probs.shape[0]
     averaged_scores = scores / np.maximum(counts, 1.0)
-    averaged_action_scores = action_scores / np.maximum(counts, 1.0)
-    averaged_team_scores = team_scores / np.maximum(counts[:, None], 1.0)
     if not return_displacements:
-        if return_components:
-            return averaged_scores, averaged_action_scores, averaged_team_scores
         return averaged_scores
     averaged_displacements = displacement_sums / np.maximum(counts[:, 0], 1.0)
-    if return_components:
-        return averaged_scores, averaged_displacements, averaged_action_scores, averaged_team_scores
     return averaged_scores, averaged_displacements
 
 
@@ -427,8 +410,6 @@ def scores_to_predictions(
     decode_nms_window_frames: dict[str, int] | None = None,
     displacements: np.ndarray | None = None,
     displacement_max_frames: int = 4,
-    action_scores: np.ndarray | None = None,
-    team_scores: np.ndarray | None = None,
 ):
     thresholds = dict(DEFAULT_DECODE_THRESHOLDS)
     thresholds.update(decode_thresholds or {})
@@ -437,12 +418,7 @@ def scores_to_predictions(
 
     predictions = []
     for action_idx, action in enumerate(Action):
-        if action_scores is not None:
-            class_scores = action_scores[:, action_idx + 1]
-        else:
-            left_col = action_idx + 1
-            right_col = action_idx + 1 + NUM_ACTION_CLASSES
-            class_scores = scores[:, left_col] + scores[:, right_col]
+        class_scores = scores[:, action_idx + 1]
         min_score = max(threshold, thresholds.get(action.value, threshold))
         candidate_indices = local_peak_indices(class_scores, min_score)
         if candidate_indices.size == 0:
@@ -461,39 +437,12 @@ def scores_to_predictions(
         for frame_idx, confidence in kept:
             position = int(frame_idx / fps * 1000)
             action_confidence = float(confidence)
-            if team_scores is not None:
-                left_team_confidence = float(team_scores[frame_idx, action_idx, 0])
-                right_team_confidence = float(team_scores[frame_idx, action_idx, 1])
-                selected_team_idx = 0 if left_team_confidence >= right_team_confidence else 1
-            else:
-                left_col = action_idx + 1
-                right_col = action_idx + 1 + NUM_ACTION_CLASSES
-                left_team_confidence = float(scores[frame_idx, left_col])
-                right_team_confidence = float(scores[frame_idx, right_col])
-                denom = left_team_confidence + right_team_confidence
-                if denom > 0:
-                    left_team_confidence /= denom
-                    right_team_confidence /= denom
-                selected_team_idx = 0 if left_team_confidence >= right_team_confidence else 1
-            selected_team_confidence = (
-                left_team_confidence if selected_team_idx == 0 else right_team_confidence
-            )
-            team = "left" if selected_team_idx == 0 else "right"
-            joint_confidence = action_confidence * selected_team_confidence
             predictions.append(
                 {
                     "label": action.value,
-                    "team": team,
                     "position": position,
                     "gameTime": format_game_time(position),
                     "confidence": action_confidence,
-                    "joint_confidence": joint_confidence,
-                    "action_confidence": action_confidence,
-                    "team_confidence": selected_team_confidence,
-                    "team_confidences": {
-                        "left": left_team_confidence,
-                        "right": right_team_confidence,
-                    },
                 }
             )
     predictions.sort(key=lambda item: item["position"])

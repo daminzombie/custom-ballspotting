@@ -49,7 +49,6 @@ class CustomTDeedModule(nn.Module):
             concat=True,
         )
         self._pred_action = FCLayers(feat_dim, num_actions + 1)
-        self._pred_team = FCLayers(feat_dim, num_actions * 2)
         self._pred_displ = FCLayers(feat_dim, 1)
         self.augmentation = T.Compose(
             [
@@ -81,12 +80,6 @@ class CustomTDeedModule(nn.Module):
         im_feat = self._temp_fine(im_feat)
         return {
             "action_logits": self._pred_action(im_feat),
-            "team_logits": self._pred_team(im_feat).reshape(
-                batch_size,
-                clip_len,
-                self.num_actions,
-                2,
-            ),
             "displacement": self._pred_displ(im_feat).squeeze(-1),
         }
 
@@ -110,21 +103,6 @@ class CustomTDeedModule(nn.Module):
         self.load_state_dict(state)
 
 
-def team_action_probabilities(
-    outputs: dict[str, torch.Tensor],
-) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Return legacy joint scores plus separate action/team probabilities.
-
-    The joint layout is kept compatible with the previous head:
-    background, LEFT actions, then RIGHT actions.
-    """
-    action_probs = torch.softmax(outputs["action_logits"], dim=-1)
-    team_probs = torch.softmax(outputs["team_logits"], dim=-1)
-    foreground_action_probs = action_probs[..., 1:]
-    left_scores = foreground_action_probs * team_probs[..., 0]
-    right_scores = foreground_action_probs * team_probs[..., 1]
-    joint_probs = torch.cat(
-        [action_probs[..., :1], left_scores, right_scores],
-        dim=-1,
-    )
-    return joint_probs, action_probs, team_probs
+def action_probabilities(outputs: dict[str, torch.Tensor]) -> torch.Tensor:
+    """Per-timestep softmax over action head (incl. background at index 0)."""
+    return torch.softmax(outputs["action_logits"], dim=-1)

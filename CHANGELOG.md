@@ -9,7 +9,7 @@ Changelog.
 
 ### Added
 
-- Initial package structure for no-team custom ball action spotting.
+- Initial package structure for action-only custom ball action spotting.
 - T-DEED style model, temporal shift layers, and SGP-Mixer head.
 - Dataset discovery from clip folders (`dataset_root` + `ground_truth.json`), frame extraction, clip splitting, and dataset logic.
 - Training, pretraining, posttraining, and single-video inference APIs.

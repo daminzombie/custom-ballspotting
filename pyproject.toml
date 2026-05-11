@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "custom-ballspotting"
 version = "0.1.0"
-description = "No-team T-DEED style ball action spotting for custom labels"
+description = "Action-only T-DEED style ball action spotting for custom labels"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {file = "LICENSE"}

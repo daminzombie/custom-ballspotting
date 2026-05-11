@@ -18,11 +18,7 @@ from tqdm import tqdm
 
 from custom_ballspotting.actions import (
     Action,
-    TEAM_IGNORE_INDEX,
-    Team,
     action_to_index,
-    parse_team_string,
-    team_to_index,
 )
 from custom_ballspotting.augmentations import (
     augment_with_camera_movement,
@@ -38,7 +34,6 @@ SOCCERNET_BALL_LABELS_JSON = "Labels-ball.json"
 class Annotation:
     label: Action
     position: int
-    team: Team = Team.LEFT
 
     def frame_nr(self, fps: float) -> int:
         return int(self.position / 1000 * fps)
@@ -224,7 +219,6 @@ class TDeedClip:
     origin: VideoClip
     clip_tensor: torch.Tensor
     action_label_ids: torch.Tensor
-    team_label_ids: torch.Tensor
     displacement: torch.Tensor
     profile: dict[str, float] | None = None
 
@@ -245,7 +239,6 @@ class TDeedClip:
         item_start_t = time.perf_counter()
         num_frames = len(clip.frames)
         action_label_ids = torch.zeros(num_frames, dtype=torch.long)
-        team_label_ids = torch.full((num_frames,), TEAM_IGNORE_INDEX, dtype=torch.long)
         displacement = torch.zeros(num_frames, dtype=torch.float32)
 
         flip = random.random() < flip_proba
@@ -253,9 +246,7 @@ class TDeedClip:
         for idx, frame in enumerate(clip.frames):
             if frame.annotation is None:
                 continue
-            team = frame.annotation.team.flip() if flip else frame.annotation.team
             action_idx = action_to_index(frame.annotation.label)
-            team_idx = team_to_index(team)
             valid_offsets = range(
                 max(-displacement_radius, -idx),
                 min(displacement_radius, num_frames - idx - 1) + 1,
@@ -263,7 +254,6 @@ class TDeedClip:
             for offset in valid_offsets:
                 target_idx = idx + offset
                 action_label_ids[target_idx] = action_idx
-                team_label_ids[target_idx] = team_idx
                 displacement[idx + offset] = float(offset)
         label_done_t = time.perf_counter()
 
@@ -325,7 +315,6 @@ class TDeedClip:
             # sample-by-sample before DataLoader collation, avoiding a huge CPU batch copy.
             clip_tensor=clip_tensor.float() if device is not None else clip_tensor,
             action_label_ids=action_label_ids.to(device) if device is not None else action_label_ids,
-            team_label_ids=team_label_ids.to(device) if device is not None else team_label_ids,
             displacement=displacement.to(device) if device is not None else displacement,
             profile=profile_metrics if profile else None,
         )
@@ -404,7 +393,6 @@ class CustomTDeedDataset(Dataset):
         out = {
             "clip_tensor": item.clip_tensor,
             "action_label_ids": item.action_label_ids,
-            "team_label_ids": item.team_label_ids,
             "displacement": item.displacement,
         }
         if self.profile_items:
@@ -442,18 +430,8 @@ def annotations_from_ground_truth_payload(
     *,
     skip_unknown_labels: bool = True,
     unknown_labels_acc: set[str] | None = None,
-    random_team_when_na: bool = True,
 ) -> list[Annotation]:
-    """Parse SoccerNet-style `ground_truth.json` annotations.
-
-    Each annotation may optionally carry a ``"team"`` field (``"left"``,
-    ``"right"``, or ``"not applicable"``, plus common aliases such as
-    ``"not_applicable"`` or ``"n/a"``).  When absent the annotation defaults
-    to ``Team.LEFT``.  Unrecognised team strings also default to ``Team.LEFT``.
-    When ``random_team_when_na`` is True, ``"not applicable"`` (and recognised
-    NA aliases) is resolved to left or right at random (same idea as dudek
-    ``random_team_when_no_team``).
-    """
+    """Parse SoccerNet-style `ground_truth.json` annotations."""
     out: list[Annotation] = []
     for item in raw.get("annotations", []):
         label_raw = item["label"]
@@ -466,10 +444,7 @@ def annotations_from_ground_truth_payload(
                 continue
             raise
         pos = int(item["position"])
-        team = parse_team_string(item.get("team"))
-        if random_team_when_na and team == Team.NOT_APPLICABLE:
-            team = Team.RIGHT if random.random() > 0.5 else Team.LEFT
-        out.append(Annotation(label=action, position=pos, team=team))
+        out.append(Annotation(label=action, position=pos))
     return out
 
 
@@ -478,7 +453,6 @@ def video_record_from_clip_dir(
     dataset_root: Path,
     *,
     unknown_labels_acc: set[str] | None = None,
-    random_team_when_na: bool = True,
 ) -> VideoRecord | None:
     """One clip directory: first `*.mp4` + labels JSON."""
     mp4 = find_first_mp4(clip_dir)
@@ -494,7 +468,6 @@ def video_record_from_clip_dir(
     annotations = annotations_from_ground_truth_payload(
         raw,
         unknown_labels_acc=unknown_labels_acc,
-        random_team_when_na=random_team_when_na,
     )
     try:
         rel = clip_dir.relative_to(dataset_root)
@@ -514,8 +487,6 @@ def video_record_from_clip_dir(
 
 def load_dataset_records(
     dataset_root: str,
-    *,
-    random_team_when_na: bool = True,
 ) -> list[VideoRecord]:
     """
     Load clips under dataset_root (recursive): each folder that contains
@@ -536,7 +507,6 @@ def load_dataset_records(
             clip_dir,
             root,
             unknown_labels_acc=unknown_labels,
-            random_team_when_na=random_team_when_na,
         )
         if rec is not None:
             records.append(rec)
