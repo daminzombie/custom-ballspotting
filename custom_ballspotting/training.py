@@ -31,6 +31,30 @@ from custom_ballspotting.data import (
 from custom_ballspotting.eval import val_map
 from custom_ballspotting.model.tdeed import CustomTDeedModule
 
+def _log_val_per_class_map(
+    *,
+    writer: SummaryWriter,
+    epoch: int,
+    per_class: dict[str, float] | None,
+) -> None:
+    if not per_class:
+        return
+    for action in Action:
+        writer.add_scalar(f"val/map_ap/{action.value}", per_class[action.value], epoch)
+    writer.add_text(
+        "val/per_class_map_mine",
+        json.dumps(per_class, indent=2, sort_keys=True),
+        epoch,
+    )
+
+
+def _print_val_per_class_map(delta_frames: int, per_class: dict[str, float]) -> None:
+    label_w = max(len(a.value) for a in Action)
+    print(f"  per-class AP @ {delta_frames}f:", flush=True)
+    for action in Action:
+        print(f"    {action.value:<{label_w}}  {per_class[action.value]:.6f}", flush=True)
+
+
 # Non-TTY (e.g. PM2, systemd): plain step logs at most every ~N batches so logs stay usable.
 _STEP_LOG_PLAIN_DIVISOR = 50
 _STEP_LOG_PLAIN_CAP = 256
@@ -280,6 +304,7 @@ def train_model(
 
             # mAP validation — ``map_mine`` plus optional SoccerNet ``mAPevaluateTest`` (dudek eval).
             epoch_map: float | None = None
+            epoch_per_class_map: dict[str, float] | None = None
             epoch_challenge_map: float | None = None
             val_map_wall_s: float | None = None
             if use_map and epoch >= config.map_start_epoch:
@@ -307,17 +332,26 @@ def train_model(
                 )
                 val_map_wall_s = time.perf_counter() - map_wall_start
                 epoch_map = metrics.map_mine
+                epoch_per_class_map = metrics.per_class_map
                 epoch_challenge_map = metrics.challenge_mAP
                 model.train()
                 writer.add_scalar("val/map_mine", epoch_map, epoch)
                 writer.add_scalar("val/map_wall_s", val_map_wall_s, epoch)
                 if epoch_challenge_map is not None:
                     writer.add_scalar("val/challenge_mAP", epoch_challenge_map, epoch)
+                if epoch_per_class_map is not None:
+                    _log_val_per_class_map(
+                        writer=writer,
+                        epoch=epoch,
+                        per_class=epoch_per_class_map,
+                    )
                 parts = [f"  map_mine={epoch_map:.6f}"]
                 if epoch_challenge_map is not None:
                     parts.append(f"challenge_mAP={epoch_challenge_map:.6f}")
                 parts.append(f"wall_s={val_map_wall_s:.2f}")
                 print(" ".join(parts), flush=True)
+                if epoch_per_class_map is not None:
+                    _print_val_per_class_map(config.map_delta_frames, epoch_per_class_map)
 
             writer.flush()
 
@@ -357,6 +391,11 @@ def train_model(
                 summary_parts.append(f"val_wall_s={val_wall_s:.2f}")
             if epoch_map is not None:
                 summary_parts.append(f"map_mine={epoch_map:.6f}")
+            if epoch_per_class_map is not None:
+                summary_parts.append(
+                    "per_class_map_mine="
+                    + json.dumps(epoch_per_class_map, sort_keys=True, separators=(",", ":"))
+                )
             if epoch_challenge_map is not None:
                 summary_parts.append(f"challenge_mAP={epoch_challenge_map:.6f}")
             if val_map_wall_s is not None:
@@ -395,6 +434,7 @@ def train_model(
                     "train_loss": train_loss,
                     "val_loss": val_loss if val_loader is not None else None,
                     "val_map_mine": epoch_map,
+                    "val_per_class_map_mine": epoch_per_class_map,
                     "val_challenge_mAP": epoch_challenge_map,
                     "best_checkpoint_path": save_as,
                     "best_map_mine": best_map_metric,
@@ -440,6 +480,7 @@ def train_model(
                     "train_loss": train_loss,
                     "val_loss": val_loss if val_loader is not None else None,
                     "val_map_mine": epoch_map,
+                    "val_per_class_map_mine": epoch_per_class_map,
                     "val_challenge_mAP": epoch_challenge_map,
                     "pretrained_checkpoint_path": pretrained_checkpoint_path,
                     "config": config.__dict__,

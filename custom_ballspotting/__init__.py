@@ -4,7 +4,7 @@ from custom_ballspotting.actions import (
     NUM_ACTION_CLASSES,
     TRAINING_CE_RELATIVE_WEIGHTS,
 )
-from custom_ballspotting.eval import compute_map, val_map
+from custom_ballspotting.eval import compute_map, compute_per_class_ap, val_map
 from custom_ballspotting.inference import (
     infer_video,
     resolve_infer_video_params,
@@ -18,6 +18,7 @@ __all__ = [
     "TRAINING_CE_RELATIVE_WEIGHTS",
     "NUM_ACTION_CLASSES",
     "compute_map",
+    "compute_per_class_ap",
     "val_map",
     "infer_video",
     "resolve_infer_video_params",
